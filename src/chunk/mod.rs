@@ -42,49 +42,27 @@ impl Chunk {
                 let value_index = self.code.get(index + 1);
                 match value_index {
                     None => return None,
-                    Some(index) => return Some((2, Operation::Constant{index: *index}))
+                    Some(value_index) => return Some((index + 2, Operation::Constant{index: *value_index}))
                 }
             },
-            OpCode::Return => return Some((1, Operation::Return)),
+            OpCode::Return => return Some((index + 1, Operation::Return)),
             _ => return None,
         }
     }
-    
-    pub fn iter(&self) -> ChunkIterator {
-        ChunkIterator{chunk: self, code_index: 0}
-    }
 
     pub fn disassemble(&self) {
-        let mut iterator = self.iter();
-        let mut index = iterator.index();
-        let mut op = iterator.next();
+        let mut index = 0;
+        let mut op = self.read_operation(index);
         while op.is_some() {
             let line = if index != 0 && self.lines[index] == self.lines[index-1] {
                 "   |".to_string()
             } else {
                 format!("{:4}", self.lines[index])
             };
-            println!("{:04} {} {:?}", index, line, op.unwrap());
-            index = iterator.index();
-            op = iterator.next();
+            let (new_index, operation) = op.unwrap();
+            println!("{:04} {} {:?}", index, line, operation);
+            index = new_index;
+            op = self.read_operation(index);
         }
-    }
-}
-
-pub struct ChunkIterator<'a>{chunk: &'a Chunk, code_index: usize}
-
-impl<'a> ChunkIterator<'a> {
-    fn index(&self) -> usize {
-        self.code_index
-    }
-}
-
-impl<'a> Iterator for ChunkIterator<'a> {
-    type Item = Operation;
-
-    fn next(&mut self) -> Option<Operation> {
-        let (offset, op) = self.chunk.read_operation(self.code_index)?;
-        self.code_index += offset;
-        Some(op)
     }
 }
