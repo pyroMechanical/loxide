@@ -1,3 +1,1 @@
-pub union Value {
-    pub num: f64,
-}
+pub type Value = f64;

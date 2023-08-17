@@ -2,10 +2,12 @@ use crate::value::Value;
 
 pub mod operations;
 pub use operations::{Operation, OpCode};
+
+#[derive(Clone)]
 pub struct Chunk {
     code: Vec<u8>,
     lines: Vec<u32>,
-    constants: Vec<Value>
+    pub constants: Vec<Value>
 }
 
 impl Chunk {
@@ -45,15 +47,18 @@ impl Chunk {
                     Some(value_index) => return Some((index + 2, Operation::Constant{index: *value_index}))
                 }
             },
+            OpCode::Negate => return Some((index + 1, Operation::Negate)),
+            OpCode::Add => return Some((index + 1, Operation::Add)),
+            OpCode::Subtract => return Some((index + 1, Operation::Subtract)),
+            OpCode::Multiply => return Some((index + 1, Operation::Multiply)),
+            OpCode::Divide => return Some((index + 1, Operation::Divide)),
             OpCode::Return => return Some((index + 1, Operation::Return)),
-            _ => return None,
         }
     }
 
-    pub fn disassemble(&self) {
-        let mut index = 0;
+    pub fn disassemble_instruction(&self, index: usize) -> Option<usize> {
         let mut op = self.read_operation(index);
-        while op.is_some() {
+        if op.is_some() {
             let line = if index != 0 && self.lines[index] == self.lines[index-1] {
                 "   |".to_string()
             } else {
@@ -61,8 +66,15 @@ impl Chunk {
             };
             let (new_index, operation) = op.unwrap();
             println!("{:04} {} {:?}", index, line, operation);
-            index = new_index;
-            op = self.read_operation(index);
+            return Some(new_index);
+        }
+        return None;
+    }
+
+    pub fn disassemble(&self) {
+        let mut index = Some(0);
+        while index.is_some() {
+            index = self.disassemble_instruction(index.unwrap());
         }
     }
 }
