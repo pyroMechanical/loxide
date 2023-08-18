@@ -94,7 +94,7 @@ impl<'a> Scanner<'a> {
 
     fn advance(&mut self) -> Option<char> {
         let (_, c) = self.source.next()?;
-        self.current = unsafe {self.source.as_str().as_ptr().offset_from(self.string.as_ptr()) as usize};
+        self.current = self.string.len() - self.source.as_str().len();
         Some(c)
     }
 
@@ -297,7 +297,6 @@ impl<'a> Scanner<'a> {
                 },
                 '0'..='9' => self.number(),
                 'a'..='z' | 'A'..='Z' => self.identifier(),
-
                 _ => self.error_token("Unexpected character!"),
             },
         }
