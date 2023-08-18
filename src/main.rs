@@ -1,32 +1,46 @@
-use std::env::args;
 use std::rc::Rc;
 
 mod chunk;
+mod compiler;
 mod value;
 mod vm;
 
+use vm::*;
+
+fn repl(vm: &mut VM) {
+    let input = std::io::stdin();
+    'repl: loop {
+        let mut line = String::new();
+        match input.read_line(&mut line) {
+            Ok(n) => {
+                if n == 0 {
+                    break 'repl;
+                }
+                vm.interpret(line);
+            }
+            Err(error) => break 'repl,
+        }
+    }
+}
+
+fn run_file(vm: &mut VM, file_path: String) {
+    let file = std::fs::read_to_string(file_path.as_str());
+    match file {
+        Ok(source) => {
+            vm.interpret(source);
+        },
+        Err(e) => eprintln!("could not read file {}: {}",  file_path, e)
+    };
+}
+
 fn main() {
-    let mut vm = vm::VM::new();
-    let mut chunk = chunk::Chunk::new();
-    chunk.add_op(chunk::OpCode::Constant, 123);
-    let constant = chunk.add_constant(1.2);
-    chunk.add_byte(constant, 123);
-
-    chunk.add_op(chunk::OpCode::Constant, 123);
-    let constant = chunk.add_constant(3.4);
-    chunk.add_byte(constant, 123);
-
-    chunk.add_op(chunk::OpCode::Add, 123);
-
-    chunk.add_op(chunk::OpCode::Constant, 123);
-    let constant = chunk.add_constant(5.6);
-    chunk.add_byte(constant, 123);
-
-    chunk.add_op(chunk::OpCode::Divide, 123);
-
-    chunk.add_op(chunk::OpCode::Negate, 123);
-    chunk.add_op(chunk::OpCode::Return, 123);
-    let chunk = Rc::new(chunk);
-    vm.interpret(chunk);
-    //chunk.disassemble();
+    let mut vm = VM::new();
+    let mut args = std::env::args();
+    if args.len() == 1 {
+        repl(&mut vm);
+    } else if args.len() == 2 {
+        run_file(&mut vm, args.nth(1).unwrap());
+    } else {
+        eprintln!("Usage: rlox [path]");
+    }
 }

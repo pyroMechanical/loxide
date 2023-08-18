@@ -84,9 +84,11 @@ impl VM {
         }
     }
 
-    pub fn interpret(&mut self, chunk: Rc<Chunk>) -> Result<(), InterpretError> {
-        self.chunk = Some(chunk);
-        self.ip = 0;
-        self.run()
+    pub fn interpret(&mut self, source: String) -> Result<(), InterpretError> {
+        crate::compiler::compile(source.as_str());
+        Ok(())
+        //self.chunk = Some(chunk);
+        //self.ip = 0;
+        //self.run()
     }
 }
