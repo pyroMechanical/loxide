@@ -2,7 +2,6 @@ use std::rc::Rc;
 
 mod chunk;
 mod compiler;
-mod scanner;
 mod value;
 mod vm;
 

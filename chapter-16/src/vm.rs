@@ -23,7 +23,7 @@ pub enum InterpretError {
 }
 
 pub struct VM {
-    chunk: Option<Chunk>,
+    chunk: Option<Rc<Chunk>>,
     ip: usize,
     stack: [Value; STACK_MAX],
     stack_index: usize
@@ -85,10 +85,10 @@ impl VM {
     }
 
     pub fn interpret(&mut self, source: String) -> Result<(), InterpretError> {
-        let chunk = crate::compiler::compile(source.as_str())?;
-
-        self.chunk = Some(chunk);
-        self.ip = 0;
-        self.run()
+        crate::compiler::compile(source.as_str());
+        Ok(())
+        //self.chunk = Some(chunk);
+        //self.ip = 0;
+        //self.run()
     }
 }
