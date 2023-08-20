@@ -54,8 +54,6 @@ impl VM {
                 match read_op {
                     None => return Ok(()), //must return something if there is no code
                     Some((new_ip, op)) => {
-                        #[cfg(debug_assertions)]
-                        chunk.disassemble_instruction(self.ip);
                         self.ip = new_ip;
                         match op {
                             Operation::Return => {

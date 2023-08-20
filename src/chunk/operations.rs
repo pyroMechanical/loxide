@@ -20,6 +20,12 @@ impl TryInto<OpCode> for u8 {
     }
 }
 
+impl Into<u8> for OpCode {
+    fn into(self) -> u8 {
+        unsafe{std::mem::transmute(self)}
+    }
+}
+
 //must be repr(u8) to avoid undefined behavior!
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]

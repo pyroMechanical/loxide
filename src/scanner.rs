@@ -45,7 +45,6 @@ pub enum TokenKind {
     While,
 
     Error,
-    EOF,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -58,6 +57,14 @@ pub struct Token<'a> {
 impl<'a> Token<'a> {
     pub fn kind(&self) -> TokenKind {
         self.kind
+    }
+
+    pub fn as_str(&self) -> &'a str {
+        self.string
+    }
+
+    pub fn line(&self) -> u32 {
+        self.line
     }
 }
 
@@ -80,6 +87,7 @@ fn check_keyword(string: &str, keyword: &str, kind: TokenKind) -> TokenKind {
     }
 }
 
+#[derive(Clone)]
 pub struct Scanner<'a> {
     string: &'a str,
     source: CharIndices<'a>,
@@ -87,7 +95,6 @@ pub struct Scanner<'a> {
     current: usize,
     line: u32,
 }
-
 impl<'a> Scanner<'a> {
     pub fn new(source: &'a str) -> Self {
         Self {
@@ -173,6 +180,9 @@ impl<'a> Scanner<'a> {
                                 }
                             }
                         }
+                        else {
+                            break;
+                        }
                     }
                     _ => break,
                 },
@@ -220,7 +230,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    fn identifier(&mut self) -> Token {
+    fn identifier(&mut self) -> Token<'a> {
         'identifier: loop {
             match self.peek() {
                 None => break 'identifier,
@@ -235,7 +245,7 @@ impl<'a> Scanner<'a> {
         self.make_token(self.identifier_kind())
     }
 
-    fn number(&mut self) -> Token {
+    fn number(&mut self) -> Token<'a> {
         'integer: loop {
             match self.peek() {
                 None => break 'integer,
@@ -262,7 +272,7 @@ impl<'a> Scanner<'a> {
         self.make_token(TokenKind::Number)
     }
 
-    fn string(&mut self) -> Token {
+    fn string(&mut self) -> Token<'a> {
         loop {
             match self.advance() {
                 None => return self.error_token("Unterminated String!"),
@@ -277,12 +287,12 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    pub fn scan_token(&mut self) -> Token {
+    pub fn scan_token(&mut self) -> Option<Token<'a>> {
         self.start = self.current;
         self.skip_whitespace();
         let c = self.advance();
-        match c {
-            None => return self.make_token(TokenKind::EOF),
+        let token = match c {
+            None => return None,
             Some(c) => match c {
                 '(' => self.make_token(TokenKind::LeftParen),
                 ')' => self.make_token(TokenKind::RightParen),
@@ -316,6 +326,15 @@ impl<'a> Scanner<'a> {
                 'a'..='z' | 'A'..='Z' => self.identifier(),
                 _ => self.error_token("Unexpected character!"),
             },
-        }
+        };
+        Some(token)
+    }
+}
+
+impl<'a> Iterator for Scanner<'a> {
+    type Item = Token<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.scan_token()
     }
 }
