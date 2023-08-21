@@ -19,6 +19,12 @@ impl Chunk {
         }
     }
 
+    pub fn get_line(&self, ip: usize) -> u32 {
+        //since instruction pointer is at next instruction,
+        //we need to subtract 1 to find the current instruction.
+        self.lines[ip - 1]
+    }
+
     pub fn add_byte(&mut self, byte: u8, line: u32) {
         self.code.push(byte);
         self.lines.push(line);
@@ -26,7 +32,7 @@ impl Chunk {
 
     pub fn add_constant(&mut self, value: Value) -> usize {
         self.constants.push(value);
-        (self.constants.len() - 1)
+        self.constants.len() - 1
     }
 
     pub fn read_operation(&self, index: usize) -> Option<(usize, Operation)> {
@@ -43,7 +49,14 @@ impl Chunk {
                     Some(value_index) => return Some((index + 2, Operation::Constant{index: *value_index}))
                 }
             },
+            OpCode::False => return Some((index + 1, Operation::False)),
+            OpCode::True => return Some((index + 1, Operation::True)),
+            OpCode::Nil => return Some((index + 1, Operation::Nil)),
+            OpCode::Equal => return Some((index + 1, Operation::Equal)),
+            OpCode::Greater => return Some((index + 1, Operation::Greater)),
+            OpCode::Less => return Some((index + 1, Operation::Less)),
             OpCode::Negate => return Some((index + 1, Operation::Negate)),
+            OpCode::Not => return Some((index + 1, Operation::Not)),
             OpCode::Add => return Some((index + 1, Operation::Add)),
             OpCode::Subtract => return Some((index + 1, Operation::Subtract)),
             OpCode::Multiply => return Some((index + 1, Operation::Multiply)),

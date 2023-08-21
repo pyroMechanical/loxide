@@ -2,11 +2,18 @@
 #[derive(Clone, Copy, Debug)]
 pub enum OpCode {
     Constant = 0,
-    Negate,
+    Nil,
+    True,
+    False,
+    Equal,
+    Greater,
+    Less,
     Add,
     Subtract,
     Multiply,
     Divide,
+    Not,
+    Negate,
     Return
 }
 impl TryInto<OpCode> for u8 {
@@ -31,10 +38,17 @@ impl Into<u8> for OpCode {
 #[derive(Clone, Copy, Debug)]
 pub enum Operation {
     Constant{index: u8} = 0,
-    Negate,
+    Nil,
+    True,
+    False,
+    Equal,
+    Greater,
+    Less,
     Add,
     Subtract,
     Multiply,
     Divide,
+    Not,
+    Negate,
     Return
 }

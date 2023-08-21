@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 mod chunk;
 mod compiler;
 mod scanner;
@@ -19,7 +17,7 @@ fn repl(vm: &mut VM) {
                 }
                 vm.interpret(line);
             }
-            Err(error) => break 'repl,
+            Err(_) => break 'repl,
         }
     }
 }

@@ -41,11 +41,19 @@ struct ParseRule<'a, 'b> {
 fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
     match kind {
         TokenKind::LeftParen => ParseRule{prefix: Some(&Parser::grouping), infix: None, precedence: Precedence::None},
+        TokenKind::Bang => ParseRule {prefix: Some(&Parser::unary), infix: None, precedence: Precedence::None},
         TokenKind::Minus => ParseRule{prefix:Some(&Parser::unary), infix: Some(&Parser::binary), precedence: Precedence::Term},
         TokenKind::Plus => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Term},
         TokenKind::Slash => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Factor},
-        TokenKind::Star => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Term},
+        TokenKind::Star => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Factor},
+        TokenKind::BangEqual => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Comparison},
+        TokenKind::EqualEqual => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Comparison},
+        TokenKind::Greater => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Comparison},
+        TokenKind::GreaterEqual => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Comparison},
+        TokenKind::Less => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Comparison},
+        TokenKind::LessEqual => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Comparison},
         TokenKind::Number => ParseRule{prefix: Some(&Parser::number), infix: None, precedence: Precedence::None},
+        TokenKind::True | TokenKind::False | TokenKind::Nil => ParseRule{prefix: Some(&Parser::literal), infix: None, precedence: Precedence::None},
         _ => ParseRule{prefix: None, infix: None, precedence: Precedence::None},
     }
 }
@@ -127,8 +135,17 @@ impl<'a> Parser<'a> {
     }
 
     fn number(&mut self) {
-        let value = self.previous.as_str().parse::<f64>().unwrap();
+        let value = Value::Number(self.previous.as_str().parse::<f64>().unwrap());
         self.emit_constant(value);
+    }
+
+    fn literal(&mut self) {
+        match self.previous.kind() {
+            TokenKind::False => self.emit_byte(OpCode::False.into()),
+            TokenKind::True => self.emit_byte(OpCode::True.into()),
+            TokenKind::Nil => self.emit_byte(OpCode::Nil.into()),
+            _ => unreachable!()
+        }
     }
 
     fn grouping(&mut self) {
@@ -142,7 +159,8 @@ impl<'a> Parser<'a> {
 
         match operator_kind {
             TokenKind::Minus => self.emit_byte(OpCode::Negate.into()),
-            _ => (),
+            TokenKind::Bang => self.emit_byte(OpCode::Not.into()),
+            _ => unreachable!(),
         }
     }
 
@@ -156,7 +174,13 @@ impl<'a> Parser<'a> {
             TokenKind::Minus => self.emit_byte(OpCode::Subtract.into()),
             TokenKind::Star => self.emit_byte(OpCode::Multiply.into()),
             TokenKind::Slash => self.emit_byte(OpCode::Divide.into()),
-            _ => ()
+            TokenKind::BangEqual => self.emit_byte_pair(OpCode::Equal.into(), OpCode::Not.into()),
+            TokenKind::EqualEqual => self.emit_byte(OpCode::Equal.into()),
+            TokenKind::Greater => self.emit_byte(OpCode::Greater.into()),
+            TokenKind::GreaterEqual => self.emit_byte_pair(OpCode::Less.into(), OpCode::Negate.into()),
+            TokenKind::Less => self.emit_byte(OpCode::Less.into()),
+            TokenKind::LessEqual => self.emit_byte_pair(OpCode::Greater.into(), OpCode::Negate.into()),
+            _ => unreachable!()
         }
     }
 
