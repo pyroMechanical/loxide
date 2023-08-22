@@ -95,7 +95,7 @@ impl VM {
     fn concatenate_strings(&mut self) -> Result<(), InterpretError> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let new_value = crate::value::concatenate_strings(a.as_string()?, b.as_string()?, &mut self.objects)?;
+        let new_value = crate::value::concatenate_strings(a.as_str()?.to_owned(), b.as_str()?, &mut self.objects)?;
         self.push(new_value)
     }
 

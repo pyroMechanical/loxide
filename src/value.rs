@@ -54,10 +54,10 @@ impl Value {
         }
     }
 
-    pub fn as_string(&self) -> Result<String, InterpretError> {
+    pub fn as_str(&self) -> Result<&str, InterpretError> {
         match self {
             Value::Obj(object) => match unsafe{object.as_ref().object_type} {
-                ObjectType::String(str) => Ok(unsafe{str.as_ref().to_string()}),
+                ObjectType::String(str) => Ok(unsafe{str.as_ref()}),
                 _ => Err(InterpretError::Runtime),
             }
             _ => Err(InterpretError::Runtime)
@@ -99,7 +99,7 @@ pub fn copy_string<'a>(source: &'a str, objects: &mut Option<NonNull<Object>>) -
     create_string_value(string, objects, InterpretError::Compile)
 }
 
-pub fn concatenate_strings<'a, 'b>(mut a: String, b: String, objects: &mut Option<NonNull<Object>>) -> Result<Value, InterpretError> {
-    a.push_str(b.as_str());
+pub fn concatenate_strings(mut a: String, b: &str, objects: &mut Option<NonNull<Object>>) -> Result<Value, InterpretError> {
+    a.push_str(b);
     create_string_value(a, objects, InterpretError::Runtime)
 }
