@@ -1,4 +1,12 @@
-use crate::{chunk::{Chunk, operations::OpCode}, scanner::{Scanner, Token, TokenKind}, vm::InterpretError, value::Value};
+use crate::{
+    chunk::{Chunk, operations::OpCode}, 
+    object::Object,
+    scanner::{Scanner, Token, TokenKind}, 
+    value::copy_string,
+    vm::InterpretError, value::Value
+};
+use std::ptr::NonNull;
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Precedence {
     None,
@@ -54,6 +62,7 @@ fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
         TokenKind::LessEqual => ParseRule{prefix: None, infix: Some(&Parser::binary), precedence: Precedence::Comparison},
         TokenKind::Number => ParseRule{prefix: Some(&Parser::number), infix: None, precedence: Precedence::None},
         TokenKind::True | TokenKind::False | TokenKind::Nil => ParseRule{prefix: Some(&Parser::literal), infix: None, precedence: Precedence::None},
+        TokenKind::String => ParseRule{prefix: Some(&Parser::string), infix: None, precedence: Precedence::None},
         _ => ParseRule{prefix: None, infix: None, precedence: Precedence::None},
     }
 }
@@ -79,17 +88,19 @@ struct Parser<'a> {
     previous: Token<'a>,
     current: Token<'a>,
     chunk: Chunk,
+    objects: &'a mut Option<NonNull<Object>>,
     panic_mode: bool,
     had_error: bool,
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str) -> Parser<'a> {
+    fn new(source: &'a str, objects: &'a mut Option<NonNull<Object>>) -> Parser<'a> {
         Parser {
             scanner: Scanner::new(source),
             previous: Token::default(),
             current: Token::default(),
             chunk: Chunk::new(),
+            objects,
             panic_mode: false,
             had_error: false,
         }
@@ -145,6 +156,20 @@ impl<'a> Parser<'a> {
             TokenKind::True => self.emit_byte(OpCode::True.into()),
             TokenKind::Nil => self.emit_byte(OpCode::Nil.into()),
             _ => unreachable!()
+        }
+    }
+
+    fn string(&mut self) {
+        let string = self.previous.as_str();
+        let value = copy_string(string.trim_start_matches('"').trim_end_matches('"'), self.objects);
+        match value {
+            Ok(value) => {
+                let index = self.chunk.add_constant(value);
+                self.emit_byte_pair(OpCode::Constant.into(), index as u8);
+            }
+            Err(_) => {
+                error(self.current, "Failed to allocate string constant!", &mut self.had_error, &mut self.panic_mode);
+            }
         }
     }
 
@@ -213,14 +238,17 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn compile(source: &str) -> Result<Chunk, InterpretError>{
-    let mut parser = Parser::new(source);
+pub fn compile(source: &str, objects: &mut Option<NonNull<Object>>) -> Result<Chunk, InterpretError>{
+    let mut parser = Parser::new(source, objects);
     parser.advance();
     parser.expression();
     parser.end();
-    #[cfg(debug_assertions)]
-    if !parser.had_error {
-        parser.chunk.disassemble();
+    match parser.had_error {
+        false => {
+            #[cfg(debug_assertions)]
+            parser.chunk.disassemble();
+            Ok(parser.chunk)
+        },
+        true => Err(InterpretError::Compile)
     }
-    Ok(parser.chunk)
 }
