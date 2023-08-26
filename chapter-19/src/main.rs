@@ -1,4 +1,3 @@
-mod allocate;
 mod chunk;
 mod compiler;
 mod object;
@@ -17,10 +16,7 @@ fn repl(vm: &mut VM) {
                 if n == 0 {
                     break 'repl;
                 }
-                match vm.interpret(line) {
-                    Ok(()) => (),
-                    Err(_) => break 'repl,
-                }
+                vm.interpret(line);
             }
             Err(_) => break 'repl,
         }
@@ -31,10 +27,7 @@ fn run_file(vm: &mut VM, file_path: String) {
     let file = std::fs::read_to_string(file_path.as_str());
     match file {
         Ok(source) => {
-            match vm.interpret(source) {
-                Ok(()) => (),
-                Err(_) => (),
-            }
+            vm.interpret(source);
         },
         Err(e) => eprintln!("could not read file {}: {}",  file_path, e)
     };

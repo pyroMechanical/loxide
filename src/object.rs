@@ -1,88 +1,68 @@
-use std::fmt::{Display, Formatter, Error};
-use std::ptr::NonNull;
+use std::collections::HashSet;
 
-use crate::vm::InterpretError;
-
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Object {
-    next: Option<NonNull<Object>>,
+    next: *mut Object,
     pub object_type: ObjectType,
 }
 
 impl Object {
-    pub fn new(object_type: ObjectType, object_list: &mut Option<NonNull<Object>>, error_value: InterpretError) -> Result<NonNull<Self>, InterpretError> {
-        let box_obj = Box::new(Object {
-            object_type,
-            next: *object_list
-        });
-        let ptr_obj = NonNull::new(Box::leak(box_obj)).ok_or(error_value)?;
-        *object_list = Some(ptr_obj);
-        Ok(ptr_obj)
+    pub fn new_string(source: &str, interned_strings: &mut HashSet<Box<str>>, objects: &mut *mut Object) -> *mut Self {
+        let string = source.to_string().into_boxed_str();
+        let interned_string = interned_strings.get(&string);
+        let ptr_str: *const str = match interned_string {
+            Some(string) => &**string,
+            None => {
+                interned_strings.insert(string);
+                &**interned_strings.get(source).unwrap()
+            }
+        };
+        let obj_string = ObjString{object: Object{next: *objects, object_type: ObjectType::String}, string: ptr_str};
+        let object = crate::allocate::allocate(&obj_string) as *mut Self;
+        *objects = object;
+        object
     }
 
-    pub fn next(&self) -> Option<NonNull<Object>> {
+    pub fn next_object(&self) -> *mut Object {
         self.next
     }
-    /// must be called before dropping an Object, or else it will leak memory.
-    /// cannot be implemented as a drop function, as this is only called during garbage collection
-    /// and termination of the interpreter.
-    pub fn free(self) {
-        match self.object_type {
-            ObjectType::String(str) => {
-                let string = unsafe{Box::from_raw(str.as_ptr())};
-                std::mem::drop(string)
+
+    pub fn to_string(object: *mut Object) -> String{
+        match unsafe{*object}.object_type {
+            ObjectType::String => {
+                let str = unsafe{(*(object as *mut ObjString)).string.as_ref().unwrap()};
+                str.to_owned()
+            }
+            _ => todo!()
+        }
+    }
+
+    pub fn as_str_ptr(object: *mut Object) -> *const str {
+        match unsafe{*object}.object_type {
+            ObjectType::String => {
+                unsafe{*(object as *mut ObjString)}.string
             }
             _ => todo!()
         }
     }
 }
-
-impl Display for Object {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
-        write!(f, "{}", self.object_type)
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 ///contained pointers must be either null or initialized and valid.
 pub enum ObjectType {
-    String(NonNull<str>),
-    Instance
+    String,
+    _Instance
 }
 
-impl PartialEq for ObjectType {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ObjectType::String(str1), ObjectType::String(str2)) => {
-                unsafe {
-                    str1.as_ref() == str2.as_ref()
-                }
-            },
-            _ => false,
-        }
-    }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ObjString {
+    object: Object,
+    pub string: *const str
 }
 
-impl ObjectType {
-    fn as_str(&self) -> &str {
-        match self {
-            ObjectType::String(str) => unsafe {str.as_ref()},
-            _ => todo!()
-        }
-    }
-}
-
-impl std::fmt::Debug for ObjectType {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error>{
-        match self {
-            ObjectType::String(str) => write!(f, "ObjectType::String(\"{}\")", unsafe {str.as_ref()}),
-            _ => todo!()
-        }
-    }
-}
-
-impl std::fmt::Display for ObjectType {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
-        write!(f, "{}", self.as_str())
+impl ObjString {
+    pub fn as_str(&self) -> &str {
+        unsafe{self.string.as_ref()}.unwrap()
     }
 }

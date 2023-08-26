@@ -1,11 +1,9 @@
-use crate::chunk::{Chunk, Operation};
-use crate::object::{Object};
+use crate::chunk::{Chunk, OpCode};
+use crate::object::Object;
 use crate::value::Value;
 
+use std::collections::{HashSet, HashMap};
 use std::convert::Infallible;
-
-use std::ptr::NonNull;
-use std::mem::MaybeUninit;
 
 const STACK_MAX: usize = 256;
 
@@ -33,7 +31,9 @@ pub struct VM {
     ip: usize,
     stack: [Value; STACK_MAX],
     stack_index: usize,
-    objects: Option<NonNull<Object>>,
+    strings: HashSet<Box<str>>,
+    globals: HashMap<*const str, Value>,
+    objects: *mut Object,
 }
 
 impl Drop for VM {
@@ -44,7 +44,7 @@ impl Drop for VM {
 
 impl VM {
     pub fn new() -> Self {
-        Self { chunk: Chunk::new(), ip: 0, stack: [Value::Number(0.0); 256], stack_index: 0, objects: None, }
+        Self { chunk: Chunk::new(), ip: 0, stack: [Value::Number(0.0); 256], stack_index: 0, strings: HashSet::new(), globals: HashMap::new(), objects: std::ptr::null_mut(), }
     }
 
     pub fn reset_stack(&mut self) {
@@ -52,10 +52,9 @@ impl VM {
     }
 
     pub fn free_objects(&mut self) {
-        while self.objects != None {
-            let valid_object = unsafe {Box::from_raw(self.objects.unwrap().as_ptr())};
-            let next = valid_object.next();
-            valid_object.free();
+        while !self.objects.is_null() {
+            let object = unsafe {Box::from_raw(self.objects)};
+            let next = object.next_object();
             self.objects = next;
         }
     }
@@ -95,27 +94,76 @@ impl VM {
     fn concatenate_strings(&mut self) -> Result<(), InterpretError> {
         let b = self.pop()?;
         let a = self.pop()?;
-        let new_value = crate::value::concatenate_strings(a.as_str()?.to_owned(), b.as_str()?, &mut self.objects)?;
+        let new_value = crate::value::concatenate_strings(a.as_str()?, b.as_str()?, &mut self.strings,&mut self.objects);
         self.push(new_value)
+    }
+    
+    fn read_operation(&mut self) -> Option<OpCode> {
+        let result = self.chunk.read_operation(self.ip);
+        self.ip += 1;
+        result
+    }
+
+    fn read_byte(&mut self) -> Option<u8> {
+        let result = self.chunk.read_byte(self.ip);
+        self.ip += 1;
+        result
     }
 
     pub fn run(&mut self) -> Result<(), InterpretError> {
         loop {
-            let read_op = self.chunk.read_operation(self.ip);
+            let read_op = self.read_operation();
             match read_op {
                 None => return Ok(()), //must return something if there is no code
-                Some((new_ip, op)) => {
-                    self.ip = new_ip;
+                Some(op) => {
                     match op {
-                        Operation::Return => {
-                            println!("{}", self.pop()?);
+                        OpCode::Return => {
                             self.free_objects();
                             return Ok(())
                         },
-                        Operation::Nil => self.push(Value::Nil)?,
-                        Operation::False => self.push(Value::Bool(false))?,
-                        Operation::True => self.push(Value::Bool(true))?,
-                        Operation::Negate => {
+                        OpCode::Print => println!("{}", self.pop()?),
+                        OpCode::Pop => {self.pop()?;},
+                        OpCode::GetGlobal => {
+                            let global = self.read_byte().unwrap();
+                            if let Value::Obj(string) = self.chunk.constants[global as usize] {
+                                let name = Object::as_str_ptr(string);
+                                match self.globals.get(&name) {
+                                    None => {self.runtime_error(format!("Undefined variable {}", unsafe{name.as_ref()}.unwrap()))?;},
+                                    Some(value) => self.push(*value)?,
+                                };
+                            }
+                            else {
+                                self.runtime_error(format!("Provided global name was not a string! this is a compiler error."))?;
+                            }
+                        }
+                        OpCode::DefineGlobal => {
+                            let global = self.read_byte().unwrap();
+                            if let Value::Obj(string) = self.chunk.constants[global as usize] {
+                                let name = Object::as_str_ptr(string);
+                                let value = self.peek(0)?;
+                                self.globals.insert(name, value);
+                            }
+                            else {
+                                self.runtime_error(format!("Provided global name was not a string! this is a compiler error."))?;
+                            }
+                        },
+                        OpCode::SetGlobal => {
+                            let global = self.read_byte().unwrap();
+                            if let Value::Obj(string) = self.chunk.constants[global as usize] {
+                                let name = Object::as_str_ptr(string);
+                                let value = self.peek(0)?;
+                                match self.globals.entry(name) {
+                                    std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                                        *occupied.get_mut() = value;
+                                    },
+                                    std::collections::hash_map::Entry::Vacant(_) => {self.runtime_error(format!("Undefined variable '{}'", unsafe{&*name}))?;},
+                                }
+                            }
+                        },
+                        OpCode::Nil => self.push(Value::Nil)?,
+                        OpCode::False => self.push(Value::Bool(false))?,
+                        OpCode::True => self.push(Value::Bool(true))?,
+                        OpCode::Negate => {
                             if self.peek(0)?.is_number() {
                                 let value = self.pop()?.as_number()?;
                                 self.push(Value::Number(-value))?;
@@ -124,18 +172,18 @@ impl VM {
                                 self.runtime_error(format!("Operand must be a number."))?;
                             }
                         }
-                        Operation::Not => {
+                        OpCode::Not => {
                             let value = self.pop()?;
                             self.push(Value::Bool(value.is_falsey()))?;
                         }
-                        Operation::Equal => {
+                        OpCode::Equal => {
                             let b = self.pop()?;
                             let a = self.pop()?;
                             self.push(Value::Bool(a == b))?;
                         }
-                        Operation::Greater => binary_op!(self, Bool, >),
-                        Operation::Less => binary_op!(self, Bool, <),
-                        Operation::Add => {
+                        OpCode::Greater => binary_op!(self, Bool, >),
+                        OpCode::Less => binary_op!(self, Bool, <),
+                        OpCode::Add => {
                             if self.peek(0)?.is_string() && self.peek(1)?.is_string() {
                                 self.concatenate_strings()?;
                             }
@@ -148,10 +196,13 @@ impl VM {
                                 self.runtime_error(format!("Operands must be two numbers or two strings."))?;
                             }
                         },
-                        Operation::Subtract => binary_op!(self, Number, -),
-                        Operation::Multiply => binary_op!(self, Number, *),
-                        Operation::Divide => binary_op!(self, Number, /),
-                        Operation::Constant{index} => {
+                        OpCode::Subtract => binary_op!(self, Number, -),
+                        OpCode::Multiply => binary_op!(self, Number, *),
+                        OpCode::Divide => binary_op!(self, Number, /),
+                        OpCode::Constant => {
+                            let index = self.read_byte();
+                            if index.is_none() {self.runtime_error(format!("Could not read constant value!"))?;}
+                            let index = index.unwrap();
                             let value = self.chunk.constants[index as usize];
                             self.push(value)?;
                         }
@@ -162,7 +213,7 @@ impl VM {
     }
 
     pub fn interpret(&mut self, source: String) -> Result<(), InterpretError> {
-        let chunk = crate::compiler::compile(source.as_str(), &mut self.objects)?;
+        let chunk = crate::compiler::compile(source.as_str(), &mut self.strings,&mut self.objects)?;
 
         self.chunk = chunk;
         self.ip = 0;

@@ -43,6 +43,7 @@ pub enum TokenKind {
     True,
     Var,
     While,
+
     Error,
 }
 
@@ -105,11 +106,7 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    pub fn is_at_end(&self) -> bool {
-        return self.source.as_str() == ""
-    }
-
-    pub fn peek(&self) -> Option<char> {
+    fn peek(&self) -> Option<char> {
         let mut peekable = self.source.clone();
         peekable.nth(0).map(|(_, c)| c)
     }

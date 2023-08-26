@@ -1,7 +1,7 @@
 use crate::value::Value;
 
 pub mod operations;
-pub use operations::{Operation, OpCode};
+pub use operations::OpCode;
 
 #[derive(Clone)]
 pub struct Chunk {
@@ -35,46 +35,40 @@ impl Chunk {
         self.constants.len() - 1
     }
 
-    pub fn read_operation(&self, index: usize) -> Option<(usize, Operation)> {
+    pub fn read_operation(&self, index:usize) -> Option<OpCode> {
         if index >= self.code.len() {
             return None;
         }
-        let op_code: OpCode = self.code[index].try_into().ok()?;
+        self.code[index].try_into().ok()
+    }
 
-        match op_code {
-            OpCode::Constant => {
-                let value_index = self.code.get(index + 1);
-                match value_index {
-                    None => return None,
-                    Some(value_index) => return Some((index + 2, Operation::Constant{index: *value_index}))
-                }
-            },
-            OpCode::False => return Some((index + 1, Operation::False)),
-            OpCode::True => return Some((index + 1, Operation::True)),
-            OpCode::Nil => return Some((index + 1, Operation::Nil)),
-            OpCode::Equal => return Some((index + 1, Operation::Equal)),
-            OpCode::Greater => return Some((index + 1, Operation::Greater)),
-            OpCode::Less => return Some((index + 1, Operation::Less)),
-            OpCode::Negate => return Some((index + 1, Operation::Negate)),
-            OpCode::Not => return Some((index + 1, Operation::Not)),
-            OpCode::Add => return Some((index + 1, Operation::Add)),
-            OpCode::Subtract => return Some((index + 1, Operation::Subtract)),
-            OpCode::Multiply => return Some((index + 1, Operation::Multiply)),
-            OpCode::Divide => return Some((index + 1, Operation::Divide)),
-            OpCode::Return => return Some((index + 1, Operation::Return)),
-        }
+    pub fn read_byte(&self, index:usize) -> Option<u8> {
+        self.code.get(index).copied()
     }
 
     pub fn disassemble_instruction(&self, index: usize) -> Option<usize> {
-        let mut op = self.read_operation(index);
+        let op = self.read_operation(index);
         if op.is_some() {
             let line = if index != 0 && self.lines[index] == self.lines[index-1] {
                 "   |".to_string()
             } else {
                 format!("{:4}", self.lines[index])
             };
-            let (new_index, operation) = op.unwrap();
-            println!("{:04} {} {:?}", index, line, operation);
+            let operation = op.unwrap();
+            let new_index = match operation {
+                OpCode::Constant
+                | OpCode::GetGlobal
+                | OpCode::DefineGlobal
+                | OpCode::SetGlobal => {
+                    let constant = self.code[index + 1];
+                    println!("{:04} {} {:?} {}", index, line, operation, constant);
+                    index + 2
+                }
+                opcode => {
+                    println!("{:04} {} {:?}", index, line, opcode);
+                    index + 1
+                }
+            };
             return Some(new_index);
         }
         return None;
