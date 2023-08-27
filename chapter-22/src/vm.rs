@@ -104,16 +104,10 @@ impl VM {
         result
     }
 
-    fn read_byte(&mut self) -> u8 {
+    fn read_byte(&mut self) -> Option<u8> {
         let result = self.chunk.read_byte(self.ip);
         self.ip += 1;
         result
-    }
-
-    fn read_u16(&mut self) -> u16 {
-        let upper = (self.read_byte() as u16) << 8;
-        let lower = self.read_byte() as u16;
-        upper | lower
     }
 
     pub fn run(&mut self) -> Result<(), InterpretError> {
@@ -123,20 +117,6 @@ impl VM {
                 None => return Ok(()), //must return something if there is no code
                 Some(op) => {
                     match op {
-                        OpCode::Jump => {
-                            let offset = self.read_u16();
-                            self.ip += offset as usize;
-                        },
-                        OpCode::JumpIfFalse => {
-                            let offset = self.read_u16();
-                            if self.peek(0)?.is_falsey() {
-                                self.ip += offset as usize;
-                            }
-                        },
-                        OpCode::Loop => {
-                            let offset = self.read_u16();
-                            self.ip -= offset as usize;
-                        }
                         OpCode::Return => {
                             self.free_objects();
                             return Ok(())
@@ -144,15 +124,15 @@ impl VM {
                         OpCode::Print => println!("{}", self.pop()?),
                         OpCode::Pop => {self.pop()?;},
                         OpCode::GetLocal => {
-                            let slot = self.read_byte();
+                            let slot = self.read_byte().unwrap();
                             self.push(self.stack[slot as usize])?;
                         },
                         OpCode::SetLocal => {
-                            let slot = self.read_byte();
+                            let slot = self.read_byte().unwrap();
                             self.stack[slot as usize] = self.peek(0)?;
-                        },
+                        }
                         OpCode::GetGlobal => {
-                            let global = self.read_byte();
+                            let global = self.read_byte().unwrap();
                             if let Value::Obj(string) = self.chunk.constants[global as usize] {
                                 let name = Object::as_str_ptr(string);
                                 match self.globals.get(&name) {
@@ -163,9 +143,9 @@ impl VM {
                             else {
                                 self.runtime_error(format!("Provided global name was not a string! this is a compiler error."))?;
                             }
-                        },
+                        }
                         OpCode::DefineGlobal => {
-                            let global = self.read_byte();
+                            let global = self.read_byte().unwrap();
                             if let Value::Obj(string) = self.chunk.constants[global as usize] {
                                 let name = Object::as_str_ptr(string);
                                 let value = self.peek(0)?;
@@ -176,7 +156,7 @@ impl VM {
                             }
                         },
                         OpCode::SetGlobal => {
-                            let global = self.read_byte();
+                            let global = self.read_byte().unwrap();
                             if let Value::Obj(string) = self.chunk.constants[global as usize] {
                                 let name = Object::as_str_ptr(string);
                                 let value = self.peek(0)?;
@@ -199,16 +179,16 @@ impl VM {
                             else {
                                 self.runtime_error(format!("Operand must be a number."))?;
                             }
-                        },
+                        }
                         OpCode::Not => {
                             let value = self.pop()?;
                             self.push(Value::Bool(value.is_falsey()))?;
-                        },
+                        }
                         OpCode::Equal => {
                             let b = self.pop()?;
                             let a = self.pop()?;
                             self.push(Value::Bool(a == b))?;
-                        },
+                        }
                         OpCode::Greater => binary_op!(self, Bool, >),
                         OpCode::Less => binary_op!(self, Bool, <),
                         OpCode::Add => {
@@ -229,10 +209,11 @@ impl VM {
                         OpCode::Divide => binary_op!(self, Number, /),
                         OpCode::Constant => {
                             let index = self.read_byte();
-                            let index = index;
+                            if index.is_none() {self.runtime_error(format!("Could not read constant value!"))?;}
+                            let index = index.unwrap();
                             let value = self.chunk.constants[index as usize];
                             self.push(value)?;
-                        },
+                        }
                     }
                 }
             }

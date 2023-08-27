@@ -115,16 +115,6 @@ fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
             infix: None,
             precedence: Precedence::None,
         },
-        TokenKind::And => ParseRule {
-            prefix: None,
-            infix: Some(&Parser::and),
-            precedence: Precedence::And,
-        },
-        TokenKind::Or => ParseRule {
-            prefix: None,
-            infix: Some(&Parser::or),
-            precedence: Precedence::Or,
-        },
         TokenKind::True | TokenKind::False | TokenKind::Nil => ParseRule {
             prefix: Some(&Parser::literal),
             infix: None,
@@ -277,25 +267,6 @@ impl<'a> Parser<'a> {
         self.emit_byte(byte2);
     }
 
-    fn emit_loop(&mut self, loop_start: usize) {
-        self.emit_byte(OpCode::Loop.into());
-
-        let offset = self.chunk.code.len() - loop_start + 2;
-        if offset > u16::MAX as usize {
-            error(self.previous, "Loop body too large.", &mut self.had_error, &mut self.panic_mode);
-        }
-
-        self.emit_byte((offset >> 8 & 0xFF) as u8);
-        self.emit_byte((offset & 0xff) as u8);
-    }
-
-    fn emit_jump(&mut self, op: OpCode) -> usize{
-        self.emit_byte(op.into());
-        self.emit_byte(0xFF);
-        self.emit_byte(0xFF);
-        return self.chunk.code.len() - 2;
-    }
-
     fn emit_constant(&mut self, value: Value) {
         let constant = self.chunk.add_constant(value);
         if constant > 255 {
@@ -308,16 +279,6 @@ impl<'a> Parser<'a> {
             return;
         }
         self.emit_byte_pair(OpCode::Constant.into(), constant as u8);
-    }
-
-    fn patch_jump(&mut self, offset: usize) {
-        let jump = self.chunk.code.len() - offset - 2;
-        if jump > u16::MAX as usize {
-            error(self.previous, "Too much code to jump over.", &mut self.had_error, &mut self.panic_mode);
-        }
-
-        self.chunk.code[offset] = ((jump >> 8) & 0xFF) as u8;
-        self.chunk.code[offset + 1] = (jump & 0xFF) as u8;
     }
 
     fn number(&mut self, _: bool) {
@@ -505,22 +466,6 @@ impl<'a> Parser<'a> {
         self.emit_byte_pair(OpCode::DefineGlobal.into(), global);
     }
 
-    fn and(&mut self, _: bool) {
-        let end_jump = self.emit_jump(OpCode::JumpIfFalse);
-        self.emit_byte(OpCode::Pop.into());
-        self.parse_precedence(Precedence::And);
-        self.patch_jump(end_jump);
-    }
-
-    fn or(&mut self, _: bool) {
-        let else_jump = self.emit_jump(OpCode::JumpIfFalse);
-        let end_jump = self.emit_jump(OpCode::Jump);
-        self.patch_jump(else_jump);
-        self.emit_byte(OpCode::Pop.into());
-        self.parse_precedence(Precedence::Or);
-        self.patch_jump(end_jump);
-    }
-
     fn expression(&mut self) {
         self.parse_precedence(Precedence::Assignment);
     }
@@ -531,90 +476,10 @@ impl<'a> Parser<'a> {
         self.emit_byte(OpCode::Print.into());
     }
 
-    fn while_statement(&mut self) {
-        let loop_start = self.chunk.code.len();
-        self.consume(TokenKind::LeftParen, "Expect '(' after 'while'.");
-        self.expression();
-        self.consume(TokenKind::RightParen, "Expect ')' after condition.");
-        let exit_jump = self.emit_jump(OpCode::JumpIfFalse);
-        self.emit_byte(OpCode::Pop.into());
-        self.statement();
-        self.emit_loop(loop_start);
-        self.patch_jump(exit_jump);
-        self.emit_byte(OpCode::Pop.into());
-    }
-
     fn expression_statement(&mut self) {
         self.expression();
         self.consume(TokenKind::Semicolon, "Expect ';' after expression.");
         self.emit_byte(OpCode::Pop.into());
-    }
-
-    fn for_statement(&mut self) {
-        self.begin_scope();
-        self.consume(TokenKind::LeftParen, "Expect '(' after 'for'.");
-        if self.match_token(TokenKind::Semicolon) {
-
-        }
-        else if self.match_token(TokenKind::Var) {
-            self.var_declaration();
-        }
-        else {
-            self.expression_statement();
-        }
-
-        let mut loop_start = self.chunk.code.len();
-        let exit_jump = if !self.match_token(TokenKind::Semicolon) {
-            self.expression();
-            self.consume(TokenKind::Semicolon, "Expect ';' after loop condition.");
-
-            Some(self.emit_jump(OpCode::JumpIfFalse))
-        }
-        else {
-            None
-        };
-        if !self.match_token(TokenKind::RightParen) {
-            let body_jump = self.emit_jump(OpCode::Jump);
-            let increment_start = self.chunk.code.len();
-            self.expression();
-            self.emit_byte(OpCode::Pop.into());
-            self.consume(TokenKind::RightParen, "Expect ')' after for clauses.");
-
-            self.emit_loop(loop_start);
-            loop_start = increment_start;
-            self.patch_jump(body_jump);
-        }
-
-        self.statement();
-        self.emit_loop(loop_start);
-
-        match exit_jump {
-            Some(exit_jump) => {
-                self.patch_jump(exit_jump);
-                self.emit_byte(OpCode::Pop.into());
-            },
-            _ => ()
-        }
-        self.end_scope();
-    }
-
-    fn if_statement(&mut self) {
-        self.consume(TokenKind::LeftParen, "Expect '(' after 'if'.");
-        self.expression();
-        self.consume(TokenKind::RightParen, "Expect ')' after condition.");
-        let then_jump = self.emit_jump(OpCode::JumpIfFalse);
-        self.emit_byte(OpCode::Pop.into());
-        self.statement();
-
-        let else_jump = self.emit_jump(OpCode::Jump);
-
-        self.patch_jump(then_jump);
-        self.emit_byte(OpCode::Pop.into());
-
-        if self.match_token(TokenKind::Else) {
-            self.statement();
-        }
-        self.patch_jump(else_jump);
     }
 
     fn block(&mut self) {
@@ -627,15 +492,6 @@ impl<'a> Parser<'a> {
     fn statement(&mut self) {
         if self.match_token(TokenKind::Print) {
             self.print_statement();
-        }
-        else if self.match_token(TokenKind::If) {
-            self.if_statement();
-        }
-        else if self.match_token(TokenKind::While) {
-            self.while_statement();
-        }
-        else if self.match_token(TokenKind::For) {
-            self.for_statement();
         }
         else if self.match_token(TokenKind::LeftBrace) {
             self.begin_scope();

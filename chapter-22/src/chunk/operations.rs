@@ -21,9 +21,6 @@ pub enum OpCode {
     Not,
     Negate,
     Print,
-    Jump,
-    JumpIfFalse,
-    Loop,
     Return
 }
 impl TryInto<OpCode> for u8 {

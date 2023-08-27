@@ -5,7 +5,7 @@ pub use operations::OpCode;
 
 #[derive(Clone)]
 pub struct Chunk {
-    pub code: Vec<u8>,
+    code: Vec<u8>,
     lines: Vec<u32>,
     pub constants: Vec<Value>
 }
@@ -42,8 +42,8 @@ impl Chunk {
         self.code[index].try_into().ok()
     }
 
-    pub fn read_byte(&self, index:usize) -> u8 {
-        *self.code.get(index).unwrap()
+    pub fn read_byte(&self, index:usize) -> Option<u8> {
+        self.code.get(index).copied()
     }
 
     pub fn disassemble_instruction(&self, index: usize) -> Option<usize> {
@@ -65,15 +65,6 @@ impl Chunk {
                     let constant = self.code[index + 1];
                     println!("{:04} {} {:?} {}", index, line, operation, constant);
                     index + 2
-                },
-                OpCode::Loop
-                | OpCode::Jump
-                | OpCode::JumpIfFalse => {
-                    let offset1 = self.code[index + 1] as u16;
-                    let offset2 = self.code[index + 2] as u16;
-                    let offset = (offset1 << 8) | offset2;
-                    println!("{:04} {} {:?} {}", index, line, operation, offset);
-                    index + 3
                 }
                 opcode => {
                     println!("{:04} {} {:?}", index, line, opcode);
