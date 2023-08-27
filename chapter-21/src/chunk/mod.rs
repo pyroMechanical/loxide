@@ -59,9 +59,7 @@ impl Chunk {
                 OpCode::Constant
                 | OpCode::GetGlobal
                 | OpCode::DefineGlobal
-                | OpCode::SetGlobal
-                | OpCode::GetLocal
-                | OpCode::SetLocal => {
+                | OpCode::SetGlobal => {
                     let constant = self.code[index + 1];
                     println!("{:04} {} {:?} {}", index, line, operation, constant);
                     index + 2

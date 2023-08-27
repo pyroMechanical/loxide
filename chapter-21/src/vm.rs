@@ -123,14 +123,6 @@ impl VM {
                         },
                         OpCode::Print => println!("{}", self.pop()?),
                         OpCode::Pop => {self.pop()?;},
-                        OpCode::GetLocal => {
-                            let slot = self.read_byte().unwrap();
-                            self.push(self.stack[slot as usize])?;
-                        },
-                        OpCode::SetLocal => {
-                            let slot = self.read_byte().unwrap();
-                            self.stack[slot as usize] = self.peek(0)?;
-                        }
                         OpCode::GetGlobal => {
                             let global = self.read_byte().unwrap();
                             if let Value::Obj(string) = self.chunk.constants[global as usize] {
