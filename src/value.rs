@@ -1,3 +1,4 @@
+use crate::allocate::VMOrCompiler;
 use crate::vm::InterpretError;
 use crate::object::{Object, ObjectType, ObjString};
 use std::collections::HashSet;
@@ -92,17 +93,17 @@ impl Value {
     }
 }
 
-fn create_string_value<'a>(source: &'a str, interned_strings: &mut HashSet<Box<str>>, objects: &mut *mut Object) -> Value {
-    let ptr_obj = Object::new_string(source, interned_strings, objects);
-    Value::Obj(ptr_obj)
+fn create_string_value<'a>(source: &'a str, vm_or_parser: &mut VMOrCompiler) -> Value {
+    let ptr_obj = Object::new_string(source, vm_or_parser);
+    Value::Obj(ptr_obj as *mut Object)
 }
 
-pub fn copy_string<'a>(source: &str, interned_strings: &mut HashSet<Box<str>>, objects: &mut *mut Object) -> Value {
-    create_string_value(source, interned_strings, objects)
+pub fn copy_string<'a>(source: &str, vm_or_parser: &mut VMOrCompiler) -> Value {
+    create_string_value(source, vm_or_parser)
 }
 
-pub fn concatenate_strings(a: &str, b: &str, interned_strings: &mut HashSet<Box<str>>, objects: &mut *mut Object) -> Value {
+pub fn concatenate_strings(a: &str, b: &str, vm_or_parser: &mut VMOrCompiler) -> Value {
     let mut string = a.to_string(); //need to create this allocation because HashSet's get_or_insert() method is currently unstable
     string.push_str(b);
-    create_string_value(string.as_ref(), interned_strings, objects)
+    create_string_value(string.as_ref(), vm_or_parser)
 }

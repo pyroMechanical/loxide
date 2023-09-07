@@ -41,6 +41,7 @@ fn run_file(vm: &mut VM, file_path: String) {
 }
 
 fn main() {
+    let _ = START_TIME.elapsed();
     let mut vm = VM::new();
     let mut args = std::env::args();
     if args.len() == 1 {

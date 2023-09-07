@@ -11,6 +11,8 @@ pub enum OpCode {
     GetGlobal,
     DefineGlobal,
     SetGlobal,
+    GetUpvalue,
+    SetUpvalue,
     Equal,
     Greater,
     Less,
@@ -24,6 +26,9 @@ pub enum OpCode {
     Jump,
     JumpIfFalse,
     Loop,
+    Call,
+    Closure,
+    CloseUpvalue,
     Return
 }
 impl TryInto<OpCode> for u8 {
