@@ -72,17 +72,16 @@ impl Default for Token<'static> {
         Token {
             kind: TokenKind::Error,
             line: 0,
-            string: ""
+            string: "",
         }
     }
 }
 
 fn check_keyword(string: &str, keyword: &str, kind: TokenKind) -> TokenKind {
     if string == keyword {
-        return kind
-    }
-    else {
-        return TokenKind::Identifier
+        return kind;
+    } else {
+        return TokenKind::Identifier;
     }
 }
 
@@ -106,7 +105,7 @@ impl<'a> Scanner<'a> {
     }
 
     pub fn is_at_end(&self) -> bool {
-        return self.source.as_str() == ""
+        return self.source.as_str() == "";
     }
 
     pub fn peek(&self) -> Option<char> {
@@ -175,15 +174,14 @@ impl<'a> Scanner<'a> {
                                     None => break,
                                     Some(c) => {
                                         if c != '\n' {
-                                           self.advance();
+                                            self.advance();
                                         } else {
                                             break;
                                         }
                                     }
                                 }
                             }
-                        }
-                        else {
+                        } else {
                             break;
                         }
                     }
@@ -210,7 +208,7 @@ impl<'a> Scanner<'a> {
                         'o' => check_keyword(chars.as_str(), "r", TokenKind::For),
                         'u' => check_keyword(chars.as_str(), "n", TokenKind::Fun),
                         _ => TokenKind::Identifier,
-                    }
+                    },
                 },
                 'i' => check_keyword(chars.as_str(), "f", TokenKind::If),
                 'n' => check_keyword(chars.as_str(), "il", TokenKind::Nil),
@@ -224,12 +222,12 @@ impl<'a> Scanner<'a> {
                         'h' => check_keyword(chars.as_str(), "is", TokenKind::This),
                         'r' => check_keyword(chars.as_str(), "ue", TokenKind::True),
                         _ => TokenKind::Identifier,
-                    }
-                }
+                    },
+                },
                 'v' => check_keyword(chars.as_str(), "ar", TokenKind::Var),
                 'w' => check_keyword(chars.as_str(), "hile", TokenKind::While),
-                _ => TokenKind::Identifier
-            }
+                _ => TokenKind::Identifier,
+            },
         }
     }
 
@@ -237,12 +235,12 @@ impl<'a> Scanner<'a> {
         'identifier: loop {
             match self.peek() {
                 None => break 'identifier,
-                Some(c) => match c{
+                Some(c) => match c {
                     '0'..='9' | 'a'..='z' | 'A'..='Z' => {
                         self.advance();
-                    },
-                    _ => break 'identifier
-                }
+                    }
+                    _ => break 'identifier,
+                },
             };
         }
         self.make_token(self.identifier_kind())
@@ -253,7 +251,9 @@ impl<'a> Scanner<'a> {
             match self.peek() {
                 None => break 'integer,
                 Some(c) => match c {
-                    '0'..='9' => {self.advance();},
+                    '0'..='9' => {
+                        self.advance();
+                    }
                     _ => break 'integer,
                 },
             }
@@ -310,21 +310,37 @@ impl<'a> Scanner<'a> {
                 '*' => self.make_token(TokenKind::Star),
                 '"' => self.string(),
                 '=' => {
-                    let kind = if self.match_char('=') {TokenKind::EqualEqual} else {TokenKind::Equal};
+                    let kind = if self.match_char('=') {
+                        TokenKind::EqualEqual
+                    } else {
+                        TokenKind::Equal
+                    };
                     self.make_token(kind)
-                },
+                }
                 '!' => {
-                    let kind = if self.match_char('=') {TokenKind::BangEqual} else {TokenKind::Bang};
+                    let kind = if self.match_char('=') {
+                        TokenKind::BangEqual
+                    } else {
+                        TokenKind::Bang
+                    };
                     self.make_token(kind)
-                },
+                }
                 '>' => {
-                    let kind = if self.match_char('=') {TokenKind::GreaterEqual} else {TokenKind::Greater};
+                    let kind = if self.match_char('=') {
+                        TokenKind::GreaterEqual
+                    } else {
+                        TokenKind::Greater
+                    };
                     self.make_token(kind)
-                },
+                }
                 '<' => {
-                    let kind = if self.match_char('=') {TokenKind::LessEqual} else {TokenKind::Less};
+                    let kind = if self.match_char('=') {
+                        TokenKind::LessEqual
+                    } else {
+                        TokenKind::Less
+                    };
                     self.make_token(kind)
-                },
+                }
                 '0'..='9' => self.number(),
                 'a'..='z' | 'A'..='Z' => self.identifier(),
                 _ => self.error_token("Unexpected character!"),

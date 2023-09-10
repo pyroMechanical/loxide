@@ -1,69 +1,42 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::{
     compiler::Compiler,
-    object::{ObjFunction, ObjUpvalue, Object, ObjectType, ObjClosure},
+    object::{ObjClosure, ObjFunction, ObjString, ObjUpvalue, Object, ObjectType},
     value::Value,
     vm::VM,
 };
 
-pub enum VMOrCompiler<'a, 'b> {
-    VM(&'a mut VM),
-    Compiler {
-        compiler: &'a mut Compiler<'b>,
-        object_list: &'a mut *mut Object,
-        interned_strings: &'a mut HashSet<Box<str>>,
-        gray_stack: &'a mut Vec<*mut Object>,
-    },
-}
-
-impl<'a, 'b> VMOrCompiler<'a, 'b> {
-    pub fn objects(&mut self) -> &mut *mut Object {
-        match self {
-            Self::VM(vm) => vm.objects(),
-            Self::Compiler { object_list, .. } => object_list,
-        }
+pub fn allocate<T>(value: T, vm: &mut VM, compiler: Option<&mut Compiler>) -> *mut T {
+    let mut object = *vm.objects();
+    while !object.is_null() {
+        print!("({:?})", object);
+        print!("{} -> ", Object::to_string(object));
+        object = unsafe { &*object }.next;
     }
-
-    pub fn interned_strings(&mut self) -> &mut HashSet<Box<str>> {
-        match self {
-            Self::VM(vm) => vm.strings(),
-            Self::Compiler {
-                interned_strings, ..
-            } => interned_strings,
-        }
-    }
-
-    pub fn gray_stack(&mut self) -> &mut Vec<*mut Object> {
-        match self {
-            Self::VM(vm) => vm.gray_stack(),
-            Self::Compiler { gray_stack, .. } => gray_stack,
-        }
-    }
-}
-
-pub fn allocate<T>(value: T, vm_or_parser: &mut VMOrCompiler) -> *mut T {
+    println!("null");
     #[cfg(debug_assertions)]
-    collect_garbage(vm_or_parser);
+    collect_garbage(vm, compiler);
 
     let box_ptr = Box::new(value);
-    Box::into_raw(box_ptr)
+    let allocation = Box::into_raw(box_ptr);
+    println!("new allocation at {:?}", allocation);
+    allocation
 }
 
-pub fn collect_garbage(vm_or_parser: &mut VMOrCompiler) {
+pub fn collect_garbage(vm: &mut VM, compiler: Option<&mut Compiler>) {
     #[cfg(debug_assertions)]
     println!("gc begin");
 
-    match vm_or_parser {
-        VMOrCompiler::VM(vm) => mark_roots(vm),
-        VMOrCompiler::Compiler {
-            compiler,
-            gray_stack,
-            ..
-        } => compiler.mark_compiler_roots(gray_stack),
-    };
+    mark_roots(vm);
 
-    trace_references(vm_or_parser.gray_stack());
+    if let Some(compiler) = compiler {
+        compiler.mark_compiler_roots(vm.gray_stack());
+    }
+
+    trace_references(vm.gray_stack());
+    sweep(vm.objects());
+    remove_white_strings(vm.strings());
 
     #[cfg(debug_assertions)]
     println!("gc end");
@@ -75,8 +48,9 @@ pub fn mark_roots(vm: &mut VM) {
         crate::allocate::mark_value(*value, &mut gray_stack);
     }
 
-    for v in vm.global_values() {
-        crate::allocate::mark_value(*v, &mut gray_stack);
+    for (string, value) in vm.global_values() {
+        crate::allocate::mark_object(*string as *mut Object, &mut gray_stack);
+        crate::allocate::mark_value(*value, &mut gray_stack);
     }
 
     for frame in vm.frames() {
@@ -100,14 +74,21 @@ fn blacken_object(object: *mut Object, gray_stack: &mut Vec<*mut Object>) {
 
     match unsafe { (*object).object_type } {
         ObjectType::Closure => {
-            let closure = unsafe{&mut*(object as *mut ObjClosure)};
+            let closure = unsafe { &mut *(object as *mut ObjClosure) };
             mark_object(closure.function as *mut Object, gray_stack);
-            closure.upvalues.iter().for_each(|x| mark_object(*x as *mut Object, gray_stack));
-        },
+            closure
+                .upvalues
+                .iter()
+                .for_each(|x| mark_object(*x as *mut Object, gray_stack));
+        }
         ObjectType::Function => {
-            let function = unsafe{&mut*(object as *mut ObjFunction)};
+            let function = unsafe { &mut *(object as *mut ObjFunction) };
             mark_object(function.name as *mut Object, gray_stack);
-            function.chunk.constants.iter().for_each(|x| mark_value(*x, gray_stack));
+            function
+                .chunk
+                .constants
+                .iter()
+                .for_each(|x| mark_value(*x, gray_stack));
         }
         ObjectType::Upvalue => {
             let upvalue = object as *mut ObjUpvalue;
@@ -126,6 +107,37 @@ fn trace_references(gray_stack: &mut Vec<*mut Object>) {
     }
 }
 
+fn remove_white_strings(strings: &mut HashMap<Box<str>, *mut ObjString>) {
+    println!("{:?}", strings);
+    strings.retain(|_, x| unsafe { &**x }.is_marked())
+}
+
+fn sweep(objects: &mut *mut Object) {
+    let mut previous = std::ptr::null_mut();
+    let mut object = *objects;
+    while !object.is_null() {
+        println!("object: {:?}, previous: {:?}", object, previous);
+        if unsafe { &*object }.is_marked {
+            unsafe {
+                (*object).is_marked = false;
+            }
+            previous = object;
+            object = unsafe { &*object }.next_object();
+        } else {
+            let unreached = object;
+            object = unsafe { &*object }.next_object();
+            if !previous.is_null() {
+                unsafe {
+                    (&mut *previous).next = object;
+                }
+            } else {
+                *objects = object;
+            }
+            Object::free_object(unreached);
+        }
+    }
+}
+
 pub fn mark_value(value: Value, gray_stack: &mut Vec<*mut Object>) {
     if let Value::Obj(object) = value {
         mark_object(object, gray_stack)
@@ -133,13 +145,13 @@ pub fn mark_value(value: Value, gray_stack: &mut Vec<*mut Object>) {
 }
 
 pub fn mark_object(object: *mut Object, gray_stack: &mut Vec<*mut Object>) {
-    if object.is_null() || unsafe{*object}.is_marked{
+    if object.is_null() || unsafe { *object }.is_marked {
         return;
     }
     #[cfg(debug_assertions)]
     {
-        print!("{:?} mark", object);
-        println!("{}", Object::to_string(object))
+        println!("{:?} mark ", object);
+        println!("{}", Object::to_string(object));
     }
     gray_stack.push(object);
     unsafe {

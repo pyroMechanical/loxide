@@ -4,10 +4,8 @@ use crate::{
     scanner::{Scanner, Token, TokenKind},
     value::copy_string,
     value::Value,
-    vm::InterpretError, allocate::VMOrCompiler,
+    vm::{InterpretError, VM},
 };
-
-use std::collections::HashSet;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Precedence {
@@ -173,7 +171,11 @@ struct Local<'a> {
 
 impl<'a> Local<'a> {
     fn new(name: &'a str, depth: Option<i32>) -> Self {
-        Self { name, depth , is_captured: false}
+        Self {
+            name,
+            depth,
+            is_captured: false,
+        }
     }
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -184,7 +186,7 @@ enum FunctionType {
 #[derive(Clone, Copy)]
 struct Upvalue {
     index: u8,
-    is_local: bool
+    is_local: bool,
 }
 
 pub struct Compiler<'a> {
@@ -198,29 +200,45 @@ pub struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    fn new(interned_strings: &mut HashSet<Box<str>>, objects: &mut *mut Object, gray_stack: &mut Vec<*mut Object>, name: Option<Token<'a>>) -> Self {
-        let function_type = if name.is_none() {FunctionType::Script} else {FunctionType::Function};
+    fn new(vm: &mut VM, name: Option<Token<'a>>) -> Self {
+        let function_type = if name.is_none() {
+            FunctionType::Script
+        } else {
+            FunctionType::Function
+        };
         let mut compiler = Self {
             enclosing: std::ptr::null_mut(),
             function: std::ptr::null_mut(),
             function_type,
             locals: [Local::new("", None); 256],
             local_count: 1,
-            upvalues: [Upvalue{index: 0, is_local: false}; 256],
+            upvalues: [Upvalue {
+                index: 0,
+                is_local: false,
+            }; 256],
             scope_depth: 0,
         };
-        let function_name = name.map(|token| {
-            let str = token.as_str();
-            Object::new_string(str, &mut VMOrCompiler::Compiler{compiler: &mut compiler, object_list: objects, interned_strings, gray_stack})
-        });
-        
-        let function = Object::new_function(&mut VMOrCompiler::Compiler{compiler: &mut compiler, object_list: objects, interned_strings, gray_stack}, function_name);
+        let function = Object::new_function(vm, Some(&mut compiler));
         compiler.function = function;
         compiler.locals[0].depth = Some(0);
+
+        let function_name = name.map(|token| {
+            let str = token.as_str();
+            Object::new_string(str, vm, Some(&mut compiler))
+        });
+        unsafe {
+            (*compiler.function).name = function_name.unwrap_or(std::ptr::null_mut());
+        }
         compiler
     }
 
-    fn resolve_local(&self, name: &str, previous: Token, had_error: &mut bool, panic_mode: &mut bool) -> Option<u8> {
+    fn resolve_local(
+        &self,
+        name: &str,
+        previous: Token,
+        had_error: &mut bool,
+        panic_mode: &mut bool,
+    ) -> Option<u8> {
         for i in (0..self.local_count).rev() {
             let local = &self.locals[i];
             if local.name == name {
@@ -238,11 +256,17 @@ impl<'a> Compiler<'a> {
         return None;
     }
 
-    fn resolve_upvalue(&mut self, name: &str, previous: Token, had_error: &mut bool, panic_mode: &mut bool) -> Option<u8> {
+    fn resolve_upvalue(
+        &mut self,
+        name: &str,
+        previous: Token,
+        had_error: &mut bool,
+        panic_mode: &mut bool,
+    ) -> Option<u8> {
         if self.enclosing.is_null() {
             return None;
         }
-        let enclosing = unsafe{&mut *self.enclosing};
+        let enclosing = unsafe { &mut *self.enclosing };
         let local = enclosing.resolve_local(name, previous, had_error, panic_mode);
         if let Some(local) = local {
             enclosing.locals[local as usize].is_captured = true;
@@ -256,29 +280,41 @@ impl<'a> Compiler<'a> {
         return None;
     }
 
-    fn add_upvalue(&mut self, index: u8, is_local: bool, previous: Token, had_error: &mut bool, panic_mode: &mut bool) -> Option<u8> {
+    fn add_upvalue(
+        &mut self,
+        index: u8,
+        is_local: bool,
+        previous: Token,
+        had_error: &mut bool,
+        panic_mode: &mut bool,
+    ) -> Option<u8> {
         println!("upvalue index: {}", index);
-        let upvalue_count = unsafe{&*self.function}.upvalue_count;
+        let upvalue_count = unsafe { &*self.function }.upvalue_count;
         for i in 0..upvalue_count {
             let upvalue = self.upvalues[i];
             if upvalue.index == index && upvalue.is_local == is_local {
                 return Some(i as u8);
             }
-        };
-        if upvalue_count == u8::MAX as usize{
-            error(previous, "Too many closure variables in function.", had_error, panic_mode);
+        }
+        if upvalue_count == u8::MAX as usize {
+            error(
+                previous,
+                "Too many closure variables in function.",
+                had_error,
+                panic_mode,
+            );
         }
 
         self.upvalues[upvalue_count].is_local = is_local;
         self.upvalues[upvalue_count].index = index;
-        unsafe{&mut *self.function}.upvalue_count += 1;
+        unsafe { &mut *self.function }.upvalue_count += 1;
         return Some(upvalue_count as u8);
     }
 
     pub fn mark_compiler_roots(&mut self, gray_stack: &mut Vec<*mut Object>) {
         let mut compiler = self as *mut Compiler<'a>;
         while !compiler.is_null() {
-            let current = unsafe{&*compiler};
+            let current = unsafe { &*compiler };
             crate::allocate::mark_object(current.function as *mut Object, gray_stack);
             compiler = current.enclosing;
         }
@@ -290,35 +326,22 @@ pub struct Parser<'a> {
     previous: Token<'a>,
     current: Token<'a>,
     compiler: Compiler<'a>,
-    strings: &'a mut HashSet<Box<str>>,
-    objects: &'a mut *mut Object,
-    gray_stack: &'a mut Vec<*mut Object>,
+    vm: &'a mut VM,
     panic_mode: bool,
     had_error: bool,
 }
 
 impl<'a> Parser<'a> {
-    fn new(
-        source: &'a str,
-        strings: &'a mut HashSet<Box<str>>,
-        objects: &'a mut *mut Object,
-        gray_stack: &'a mut Vec<*mut Object>,
-    ) -> Parser<'a> {
+    fn new(source: &'a str, vm: &'a mut VM) -> Parser<'a> {
         Parser {
             scanner: Scanner::new(source),
             previous: Token::default(),
             current: Token::default(),
-            compiler: Compiler::new(strings, objects, gray_stack, None,),
-            strings,
-            objects,
-            gray_stack,
+            compiler: Compiler::new(vm, None),
+            vm,
             panic_mode: false,
             had_error: false,
         }
-    }
-
-    pub fn objects(&mut self) -> &mut *mut Object {
-        self.objects
     }
 
     fn check(&self, kind: TokenKind) -> bool {
@@ -456,18 +479,29 @@ impl<'a> Parser<'a> {
         let string = self.previous.as_str();
         let value = copy_string(
             string.trim_start_matches('"').trim_end_matches('"'),
-            &mut VMOrCompiler::Compiler{compiler: &mut self.compiler, object_list: &mut self.objects, interned_strings: &mut self.strings, gray_stack: &mut self.gray_stack},
+            self.vm,
+            Some(&mut self.compiler),
         );
         let index = self.current_chunk().add_constant(value);
         self.emit_byte_pair(OpCode::Constant, index as u8);
     }
 
     fn resolve_local(&mut self, name: &str) -> Option<u8> {
-        self.compiler.resolve_local(name, self.previous, &mut self.had_error, &mut self.panic_mode)
+        self.compiler.resolve_local(
+            name,
+            self.previous,
+            &mut self.had_error,
+            &mut self.panic_mode,
+        )
     }
 
     fn resolve_upvalue(&mut self, name: &str) -> Option<u8> {
-        self.compiler.resolve_upvalue(name, self.previous, &mut self.had_error, &mut self.panic_mode)
+        self.compiler.resolve_upvalue(
+            name,
+            self.previous,
+            &mut self.had_error,
+            &mut self.panic_mode,
+        )
     }
 
     fn named_variable(&mut self, can_assign: bool) {
@@ -483,8 +517,7 @@ impl<'a> Parser<'a> {
             get_op = OpCode::GetUpvalue;
             set_op = OpCode::SetUpvalue;
             arg
-        }
-        else {
+        } else {
             get_op = OpCode::GetGlobal;
             set_op = OpCode::SetGlobal;
             self.identifier_constant()
@@ -530,13 +563,9 @@ impl<'a> Parser<'a> {
             TokenKind::BangEqual => self.emit_byte_pair(OpCode::Equal, OpCode::Not),
             TokenKind::EqualEqual => self.emit_byte(OpCode::Equal),
             TokenKind::Greater => self.emit_byte(OpCode::Greater),
-            TokenKind::GreaterEqual => {
-                self.emit_byte_pair(OpCode::Less, OpCode::Negate)
-            }
+            TokenKind::GreaterEqual => self.emit_byte_pair(OpCode::Less, OpCode::Negate),
             TokenKind::Less => self.emit_byte(OpCode::Less),
-            TokenKind::LessEqual => {
-                self.emit_byte_pair(OpCode::Greater, OpCode::Negate)
-            }
+            TokenKind::LessEqual => self.emit_byte_pair(OpCode::Greater, OpCode::Negate),
             _ => unreachable!(),
         }
     }
@@ -546,13 +575,18 @@ impl<'a> Parser<'a> {
         'arguments: while !self.check(TokenKind::RightParen) {
             self.expression();
             if arg_count == 255 {
-                error(self.previous, "Can't have more than 255 arguments.", &mut self.had_error, &mut self.panic_mode);
+                error(
+                    self.previous,
+                    "Can't have more than 255 arguments.",
+                    &mut self.had_error,
+                    &mut self.panic_mode,
+                );
             }
             arg_count += 1;
             if !self.match_token(TokenKind::Comma) {
-                break 'arguments
+                break 'arguments;
             }
-        };
+        }
         self.consume(TokenKind::RightParen, "Expect ')' after arguments.");
         arg_count
     }
@@ -598,7 +632,7 @@ impl<'a> Parser<'a> {
     }
 
     fn identifier_constant(&mut self) -> u8 {
-        let str_obj = Object::new_string(self.previous.as_str(), &mut VMOrCompiler::Compiler{compiler: &mut self.compiler, object_list: &mut self.objects, interned_strings: &mut self.strings, gray_stack: &mut self.gray_stack});
+        let str_obj = Object::new_string(self.previous.as_str(), self.vm, Some(&mut self.compiler));
         return self
             .current_chunk()
             .add_constant(Value::Obj(str_obj as *mut Object)) as u8;
@@ -694,9 +728,13 @@ impl<'a> Parser<'a> {
     }
 
     fn return_statement(&mut self) {
-
         if self.compiler.function_type == FunctionType::Script {
-            error(self.previous, "Can't return from top-level code.", &mut self.had_error, &mut self.panic_mode);
+            error(
+                self.previous,
+                "Can't return from top-level code.",
+                &mut self.had_error,
+                &mut self.panic_mode,
+            );
         }
 
         if self.match_token(TokenKind::Semicolon) {
@@ -798,21 +836,26 @@ impl<'a> Parser<'a> {
     }
 
     fn function(&mut self, fun_type: FunctionType) {
-        let compiler = Compiler::new(self.strings, &mut self.objects, &mut self.gray_stack, Some(self.previous));
+        let compiler = Compiler::new(self.vm, Some(self.previous));
         let mut old_compiler = std::mem::replace(&mut self.compiler, compiler);
         self.compiler.enclosing = &mut old_compiler as *mut _;
         self.begin_scope();
         self.consume(TokenKind::LeftParen, "Expect '(' after function name.");
         'parameters: while !self.check(TokenKind::RightParen) {
-            let arity = &mut unsafe{&mut*self.compiler.function}.arity;
+            let arity = &mut unsafe { &mut *self.compiler.function }.arity;
             *arity += 1;
             if *arity > 255 {
-                error(self.current, "Can't have more than 255 parameters.", &mut self.had_error, &mut self.panic_mode);
+                error(
+                    self.current,
+                    "Can't have more than 255 parameters.",
+                    &mut self.had_error,
+                    &mut self.panic_mode,
+                );
             }
             let constant = self.parse_variable("Expect parameter name.");
             self.define_variable(constant);
             if !self.match_token(TokenKind::Comma) {
-                break 'parameters
+                break 'parameters;
             }
         }
         self.consume(TokenKind::RightParen, "Expect ')' after parameters.");
@@ -825,8 +868,8 @@ impl<'a> Parser<'a> {
         let f = self.make_constant(Value::Obj(function as *mut Object));
         self.emit_byte_pair(OpCode::Closure, f);
 
-        for i in 0..unsafe{&*function}.upvalue_count {
-            self.emit_byte(if compiler.upvalues[i].is_local {1} else {0});
+        for i in 0..unsafe { &*function }.upvalue_count {
+            self.emit_byte(if compiler.upvalues[i].is_local { 1 } else { 0 });
             self.emit_byte(compiler.upvalues[i].index);
         }
     }
@@ -845,7 +888,7 @@ impl<'a> Parser<'a> {
             self.if_statement();
         } else if self.match_token(TokenKind::Return) {
             self.return_statement();
-        }else if self.match_token(TokenKind::While) {
+        } else if self.match_token(TokenKind::While) {
             self.while_statement();
         } else if self.match_token(TokenKind::For) {
             self.for_statement();
@@ -932,8 +975,7 @@ impl<'a> Parser<'a> {
         {
             if self.compiler.locals[self.compiler.local_count - 1].is_captured {
                 self.emit_byte(OpCode::CloseUpvalue);
-            }
-            else {
+            } else {
                 self.emit_byte(OpCode::Pop);
             }
             self.compiler.local_count -= 1;
@@ -941,13 +983,8 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn compile<'a>(
-    source: &str,
-    strings: &'a mut HashSet<Box<str>>,
-    objects: &'a mut *mut Object,
-    gray_stack: &'a mut Vec<*mut Object>,
-) -> Result<*const ObjFunction, InterpretError> {
-    let mut parser = Parser::new(source, strings, objects, gray_stack);
+pub fn compile<'a>(source: &str, vm: &'a mut VM) -> Result<*const ObjFunction, InterpretError> {
+    let mut parser = Parser::new(source, vm);
     parser.advance();
     while !parser.scanner.is_at_end() {
         parser.declaration();

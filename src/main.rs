@@ -30,13 +30,11 @@ fn repl(vm: &mut VM) {
 fn run_file(vm: &mut VM, file_path: String) {
     let file = std::fs::read_to_string(file_path.as_str());
     match file {
-        Ok(source) => {
-            match vm.interpret(source) {
-                Ok(()) => (),
-                Err(_) => (),
-            }
+        Ok(source) => match vm.interpret(source) {
+            Ok(()) => (),
+            Err(_) => (),
         },
-        Err(e) => eprintln!("could not read file {}: {}",  file_path, e)
+        Err(e) => eprintln!("could not read file {}: {}", file_path, e),
     };
 }
 

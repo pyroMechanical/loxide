@@ -1,7 +1,7 @@
-use crate::allocate::VMOrCompiler;
+use crate::compiler::Compiler;
 use crate::vm::InterpretError;
+use crate::vm::VM;
 use crate::object::{Object, ObjectType, ObjString};
-use std::collections::HashSet;
 use std::fmt::{Display, Error, Formatter};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,17 +93,17 @@ impl Value {
     }
 }
 
-fn create_string_value<'a>(source: &'a str, vm_or_parser: &mut VMOrCompiler) -> Value {
-    let ptr_obj = Object::new_string(source, vm_or_parser);
+fn create_string_value<'a>(source: &'a str, vm: &mut VM, compiler: Option<&mut Compiler>) -> Value {
+    let ptr_obj = Object::new_string(source, vm, compiler);
     Value::Obj(ptr_obj as *mut Object)
 }
 
-pub fn copy_string<'a>(source: &str, vm_or_parser: &mut VMOrCompiler) -> Value {
-    create_string_value(source, vm_or_parser)
+pub fn copy_string<'a>(source: &str, vm: &mut VM, compiler: Option<&mut Compiler>) -> Value {
+    create_string_value(source, vm, compiler)
 }
 
-pub fn concatenate_strings(a: &str, b: &str, vm_or_parser: &mut VMOrCompiler) -> Value {
+pub fn concatenate_strings(a: &str, b: &str, vm: &mut VM, compiler: Option<&mut Compiler>) -> Value {
     let mut string = a.to_string(); //need to create this allocation because HashSet's get_or_insert() method is currently unstable
     string.push_str(b);
-    create_string_value(string.as_ref(), vm_or_parser)
+    create_string_value(string.as_ref(), vm, compiler)
 }

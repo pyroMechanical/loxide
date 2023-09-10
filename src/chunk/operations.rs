@@ -29,7 +29,7 @@ pub enum OpCode {
     Call,
     Closure,
     CloseUpvalue,
-    Return
+    Return,
 }
 impl TryInto<OpCode> for u8 {
     type Error = ();
@@ -37,13 +37,13 @@ impl TryInto<OpCode> for u8 {
         if self > OpCode::Return as u8 {
             Err(())
         } else {
-            Ok(unsafe{std::mem::transmute(self)})
+            Ok(unsafe { std::mem::transmute(self) })
         }
     }
 }
 
 impl Into<u8> for OpCode {
     fn into(self) -> u8 {
-        unsafe{std::mem::transmute(self)}
+        unsafe { std::mem::transmute(self) }
     }
 }
