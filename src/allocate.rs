@@ -1,26 +1,24 @@
-use std::collections::HashMap;
+use std::mem::MaybeUninit;
 
 use crate::{
     compiler::Compiler,
-    object::{ObjClosure, ObjFunction, ObjString, ObjUpvalue, Object, ObjectType},
+    object::{ObjClosure, ObjFunction, ObjString, ObjUpvalue, Object, ObjectType, ObjClass, ObjInstance},
     value::Value,
     vm::VM,
 };
 
-pub fn allocate<T>(value: T, vm: &mut VM, compiler: Option<&mut Compiler>) -> *mut T {
-    let mut object = *vm.objects();
-    while !object.is_null() {
-        print!("({:?})", object);
-        print!("{} -> ", Object::to_string(object));
-        object = unsafe { &*object }.next;
-    }
-    println!("null");
+pub fn allocate<T>(vm: &mut VM, compiler: Option<&mut Compiler>) -> *mut MaybeUninit<T> {
     #[cfg(debug_assertions)]
     collect_garbage(vm, compiler);
 
-    let box_ptr = Box::new(value);
+    #[cfg(not(debug_assertions))]
+    if vm.bytes_allocated > vm.next_gc {
+        collect_garbage(vm, compiler);
+    }
+
+    let box_ptr = Box::new(MaybeUninit::uninit());
     let allocation = Box::into_raw(box_ptr);
-    println!("new allocation at {:?}", allocation);
+    vm.bytes_allocated += std::mem::size_of::<T>();
     allocation
 }
 
@@ -35,8 +33,8 @@ pub fn collect_garbage(vm: &mut VM, compiler: Option<&mut Compiler>) {
     }
 
     trace_references(vm.gray_stack());
-    sweep(vm.objects());
-    remove_white_strings(vm.strings());
+    remove_white_strings(vm);
+    sweep(vm);
 
     #[cfg(debug_assertions)]
     println!("gc end");
@@ -95,8 +93,20 @@ fn blacken_object(object: *mut Object, gray_stack: &mut Vec<*mut Object>) {
             let value = unsafe { (*upvalue).closed };
             mark_value(value, gray_stack);
         }
+        ObjectType::Class => {
+            let class = object as *mut ObjClass;
+            mark_object(unsafe{&*class}.name as *mut Object, gray_stack);
+        }
+        ObjectType::Instance => {
+            let instance = object as *mut ObjInstance;
+            mark_object(unsafe{&*instance}.class as *mut Object, gray_stack);
+            for (string, value) in &unsafe{&*instance}.table {
+                mark_object(*string as *mut Object, gray_stack);
+                mark_value(*value, gray_stack);
+            }
+        }
+
         ObjectType::String | ObjectType::Native => return,
-        ObjectType::_Instance => todo!(),
     }
 }
 
@@ -107,14 +117,16 @@ fn trace_references(gray_stack: &mut Vec<*mut Object>) {
     }
 }
 
-fn remove_white_strings(strings: &mut HashMap<Box<str>, *mut ObjString>) {
-    println!("{:?}", strings);
-    strings.retain(|_, x| unsafe { &**x }.is_marked())
+fn remove_white_strings(vm: &mut VM) {
+    let start = vm.strings().len();
+    vm.strings().retain(|_, x| unsafe { &**x }.is_marked());
+    let end = vm.strings().len();
+    vm.bytes_allocated = std::mem::size_of::<ObjString>() * (start - end);
 }
 
-fn sweep(objects: &mut *mut Object) {
+fn sweep(vm: &mut VM) {
     let mut previous = std::ptr::null_mut();
-    let mut object = *objects;
+    let mut object = *vm.objects();
     while !object.is_null() {
         println!("object: {:?}, previous: {:?}", object, previous);
         if unsafe { &*object }.is_marked {
@@ -131,9 +143,9 @@ fn sweep(objects: &mut *mut Object) {
                     (&mut *previous).next = object;
                 }
             } else {
-                *objects = object;
+                *vm.objects() = object;
             }
-            Object::free_object(unreached);
+            vm.bytes_allocated -= Object::free_object(unreached);
         }
     }
 }
@@ -150,7 +162,7 @@ pub fn mark_object(object: *mut Object, gray_stack: &mut Vec<*mut Object>) {
     }
     #[cfg(debug_assertions)]
     {
-        println!("{:?} mark ", object);
+        print!("{:?} mark ", object);
         println!("{}", Object::to_string(object));
     }
     gray_stack.push(object);

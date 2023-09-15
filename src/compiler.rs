@@ -138,6 +138,11 @@ fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
             infix: None,
             precedence: Precedence::None,
         },
+        TokenKind::Dot => ParseRule {
+            prefix: None,
+            infix: Some(&Parser::dot),
+            precedence: Precedence::Call,
+        },
         _ => ParseRule {
             prefix: None,
             infix: None,
@@ -518,9 +523,10 @@ impl<'a> Parser<'a> {
             set_op = OpCode::SetUpvalue;
             arg
         } else {
+            let constant = self.identifier_constant();
             get_op = OpCode::GetGlobal;
             set_op = OpCode::SetGlobal;
-            self.identifier_constant()
+            constant
         };
         if can_assign && self.match_token(TokenKind::Equal) {
             self.expression();
@@ -594,6 +600,19 @@ impl<'a> Parser<'a> {
     fn call(&mut self, _: bool) {
         let arg_count = self.argument_list();
         self.emit_byte_pair(OpCode::Call, arg_count);
+    }
+
+    fn dot(&mut self, can_assign: bool) {
+        self.consume(TokenKind::Identifier, "Expect property name after '.'.");
+        let name = self.identifier_constant();
+
+        if can_assign && self.match_token(TokenKind::Equal) {
+            self.expression();
+            self.emit_byte_pair(OpCode::SetProperty, name);
+        }
+        else {
+            self.emit_byte_pair(OpCode::GetProperty, name);
+        }
     }
 
     fn parse_precedence(&mut self, precedence: Precedence) {
@@ -874,6 +893,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn class_declaration(&mut self) {
+        self.consume(TokenKind::Identifier, "Expect class name.");
+        let name_constant = self.identifier_constant();
+        self.declare_variable();
+
+        self.emit_byte_pair(OpCode::Class, name_constant);
+        self.define_variable(name_constant);
+
+        self.consume(TokenKind::LeftBrace, "Expect '{' before class body.");
+        self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
+    }
+
     fn fun_declaration(&mut self) {
         let global = self.parse_variable("Expect function name.");
         self.mark_initialized();
@@ -940,7 +971,10 @@ impl<'a> Parser<'a> {
     }
 
     fn declaration(&mut self) {
-        if self.match_token(TokenKind::Var) {
+        if self.match_token(TokenKind::Class) {
+            self.class_declaration();
+        }
+        else if self.match_token(TokenKind::Var) {
             self.var_declaration();
         } else if self.match_token(TokenKind::Fun) {
             self.fun_declaration();

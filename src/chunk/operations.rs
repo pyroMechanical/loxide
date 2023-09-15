@@ -13,6 +13,8 @@ pub enum OpCode {
     SetGlobal,
     GetUpvalue,
     SetUpvalue,
+    GetProperty,
+    SetProperty,
     Equal,
     Greater,
     Less,
@@ -29,6 +31,7 @@ pub enum OpCode {
     Call,
     Closure,
     CloseUpvalue,
+    Class,
     Return,
 }
 impl TryInto<OpCode> for u8 {

@@ -1,6 +1,6 @@
 use crate::chunk::{Chunk, OpCode};
 use crate::object::{
-    ObjClosure, ObjFunction, ObjNative, ObjString, ObjUpvalue, Object, ObjectType,
+    ObjClosure, ObjFunction, ObjNative, ObjString, ObjUpvalue, Object, ObjectType, ObjClass, ObjInstance,
 };
 use crate::value::{copy_string, Value};
 use once_cell::sync::Lazy;
@@ -62,6 +62,8 @@ pub struct VM {
     stack_index: usize,
     strings: HashMap<Box<str>, *mut ObjString>,
     globals: HashMap<*mut ObjString, Value>,
+    pub(crate) bytes_allocated: usize,
+    pub(crate) next_gc: usize,
     objects: *mut Object,
     pub open_upvalues: *mut ObjUpvalue,
     gray_stack: Vec<*mut Object>,
@@ -82,6 +84,8 @@ impl VM {
             stack_index: 0,
             strings: HashMap::new(),
             globals: HashMap::new(),
+            bytes_allocated: 0,
+            next_gc: 1024 * 1024,
             objects: std::ptr::null_mut(),
             open_upvalues: std::ptr::null_mut(),
             gray_stack: Vec::new(),
@@ -136,7 +140,6 @@ impl VM {
     }
 
     pub fn global_values(&self) -> impl Iterator<Item = (&*mut ObjString, &Value)> {
-        println!("{:?}", self.globals);
         self.globals.iter()
     }
 
@@ -213,6 +216,11 @@ impl VM {
     pub fn call_value(&mut self, callee: Value, arg_count: usize) -> Result<(), InterpretError> {
         match callee {
             Value::Obj(object) => match unsafe { *object }.object_type {
+                ObjectType::Class => {
+                    let class = object as *mut ObjClass;
+                    self.stack[self.stack_index - arg_count - 1] = Value::Obj(Object::new_instance(self, None, class) as *mut Object);
+                    Ok(())
+                },
                 ObjectType::Closure => return self.call(object as *mut ObjClosure, arg_count),
                 ObjectType::Native => {
                     let native = object as *mut ObjNative;
@@ -220,7 +228,7 @@ impl VM {
                     let result = native(self.get_value_slice(arg_count)?);
                     self.stack_index -= arg_count + 1;
                     self.push(result)
-                }
+                },
                 _ => return self.runtime_error("Can only call functions and classes.".to_string()),
             },
             _ => return self.runtime_error("Can only call functions and classes.".to_string()),
@@ -336,7 +344,6 @@ impl VM {
                             for i in 0..unsafe { &*function }.upvalue_count {
                                 let is_local = self.read_byte();
                                 let index = self.read_byte();
-                                println!("upvalue index: {}", index);
                                 if is_local != 0 {
                                     let offset = self.current_frame_mut().stack_offset;
                                     let upvalue =
@@ -345,10 +352,6 @@ impl VM {
                                     unsafe { &mut *closure }.upvalues[i] = upvalue;
                                 } else {
                                     let parent_closure = unsafe { &*self.current_frame().closure };
-                                    println!(
-                                        "function upvalues: {}",
-                                        unsafe { &*parent_closure.function }.upvalue_count
-                                    );
                                     let upvalue = parent_closure.upvalues[index as usize];
                                     unsafe { &mut *closure }.upvalues[i] = upvalue;
                                 }
@@ -356,6 +359,19 @@ impl VM {
                         } else {
                             self.runtime_error(format!(
                                 "Provided value was not a function! this is a compiler error."
+                            ))?;
+                        }
+                    }
+                    OpCode::Class => {
+                        let global = self.read_byte();
+                        if let Value::Obj(string) = self.current_chunk().constants[global as usize]
+                        {
+                            let name = string as *mut ObjString;
+                            let class = Value::Obj(Object::new_class(self, None, name) as *mut Object);
+                            self.push(class)?;
+                        } else {
+                            self.runtime_error(format!(
+                                "Provided global name was not a string! this is a compiler error."
                             ))?;
                         }
                     }
@@ -480,6 +496,49 @@ impl VM {
                             *location = value;
                         }
                     }
+                    OpCode::GetProperty => {
+                        let instance = *self.peek(0)?;
+                        if let Value::Obj(instance) = instance { 
+                            if unsafe{&*instance}.object_type != ObjectType::Instance {
+                                return self.runtime_error("Only instances have properties.".to_string());
+                            }
+                            let instance = instance as *mut ObjInstance;
+                            let name = self.read_byte();
+                            if let Value::Obj(name) = self.current_chunk().constants[name as usize] {
+                                let name = name as *mut ObjString;
+                                match unsafe{&*instance}.table.get(&name) {
+                                    Some(value) => {
+                                        self.pop()?;
+                                        self.push(*value)?;
+                                    },
+                                    None => {
+                                        return self.runtime_error(format!("Undefined property '{}'.", Object::to_string(name as *const Object)))
+                                    },
+                                }
+                            }
+                        }
+                        else {
+                            return self.runtime_error("Only instances have properties.".to_string());
+                        }
+                    }
+                    OpCode::SetProperty => {
+                        let instance = *self.peek(1)?;
+                        if let Value::Obj(instance) = instance {
+                            if unsafe{&*instance}.object_type != ObjectType::Instance {
+                                return self.runtime_error("Only instances have properties.".to_string());
+                            }
+                            let instance = instance as *mut ObjInstance;
+                            let name = self.read_byte();
+                            if let Value::Obj(name) = self.current_chunk().constants[name as usize] {
+                                unsafe{
+                                    (&mut*instance).table.insert(name as *mut ObjString, *self.peek(0)?);
+                                }
+                                let value = self.pop()?;
+                                self.pop()?;
+                                self.push(value)?;
+                            }
+                        }
+                    }
                     OpCode::Equal => {
                         let b = self.pop()?;
                         let a = self.pop()?;
@@ -515,7 +574,6 @@ impl VM {
     }
 
     pub fn interpret(&mut self, source: String) -> Result<(), InterpretError> {
-        println!("{:?}", self.stack());
         let function = crate::compiler::compile(source.as_str(), self)?;
         self.push(Value::Obj(function as *mut Object))?;
         let closure = Object::new_closure(self, None, function);

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{chunk::Chunk, compiler::Compiler, value::Value, vm::VM};
 
 #[repr(C)]
@@ -9,26 +11,39 @@ pub struct Object {
 }
 
 impl Object {
-    pub fn free_object(object: *mut Object) {
+    pub fn free_object(object: *mut Object) -> usize{
         match unsafe { *object }.object_type {
-            ObjectType::String => {} //handled by removing from interned string map
+            ObjectType::String => {0} //handled by removing from interned string map
             ObjectType::Function => {
                 let obj_function = unsafe { Box::from_raw(object as *mut ObjFunction) };
                 std::mem::drop(obj_function);
+                std::mem::size_of::<ObjFunction>()
             }
             ObjectType::Native => {
                 let obj_native = unsafe { Box::from_raw(object as *mut ObjNative) };
                 std::mem::drop(obj_native);
+                std::mem::size_of::<ObjNative>()
             }
             ObjectType::Closure => {
                 let obj_closure = unsafe { Box::from_raw(object as *mut ObjClosure) };
                 std::mem::drop(obj_closure);
+                std::mem::size_of::<ObjClosure>()
             }
             ObjectType::Upvalue => {
                 let obj_upvalue = unsafe { Box::from_raw(object as *mut ObjUpvalue) };
                 std::mem::drop(obj_upvalue);
+                std::mem::size_of::<ObjUpvalue>()
             }
-            ObjectType::_Instance => todo!(),
+            ObjectType::Class => {
+                let obj_class = unsafe {Box::from_raw(object as *mut ObjClass)};
+                std::mem::drop(obj_class);
+                std::mem::size_of::<ObjClass>()
+            }
+            ObjectType::Instance => {
+                let obj_instance = unsafe {Box::from_raw(object as *mut ObjInstance)};
+                std::mem::drop(obj_instance);
+                std::mem::size_of::<ObjInstance>()
+            },
         }
     }
     pub fn new_string(
@@ -37,18 +52,19 @@ impl Object {
         compiler: Option<&mut Compiler>,
     ) -> *mut ObjString {
         let string = source.to_string().into_boxed_str();
-        let obj_string;
-        {
-            obj_string = ObjString {
+        let string_ptr = crate::allocate::allocate::<ObjString>(vm, compiler);
+        unsafe {
+            (&mut *string_ptr).write(ObjString {
                 object: Object {
                     next: *vm.objects(),
                     object_type: ObjectType::String,
                     is_marked: false,
                 },
                 string: string.clone(),
-            };
+            });
         }
-        let obj_string = crate::allocate::allocate(obj_string.clone(), vm, compiler);
+        let obj_string = string_ptr as *mut ObjString;
+        println!("allocated strings: {:?}", vm.strings());
         let ptr_str: *mut ObjString = match vm.strings().entry(string) {
             std::collections::hash_map::Entry::Occupied(occupied) => {
                 unsafe { Box::from_raw(obj_string) };
@@ -68,34 +84,41 @@ impl Object {
         compiler: Option<&mut Compiler>,
         slot: *mut Value,
     ) -> *mut ObjUpvalue {
-        let obj_upvalue = ObjUpvalue {
-            object: Object {
-                next: *vm.objects(),
-                object_type: ObjectType::Upvalue,
-                is_marked: false,
-            },
-            location: slot,
-            closed: Value::Nil,
-            next: std::ptr::null_mut(),
-        };
-        let object = crate::allocate::allocate(obj_upvalue, vm, compiler);
+        
+        let object = crate::allocate::allocate::<ObjUpvalue>(vm, compiler);
+        unsafe {
+            (&mut*object).write(ObjUpvalue {
+                object: Object {
+                    next: *vm.objects(),
+                    object_type: ObjectType::Upvalue,
+                    is_marked: false,
+                },
+                location: slot,
+                closed: Value::Nil,
+                next: std::ptr::null_mut(),
+            });
+        }
+        let object = object as *mut ObjUpvalue;
         *vm.objects() = object as *mut Object;
         object
     }
 
     pub fn new_function(vm: &mut VM, compiler: Option<&mut Compiler>) -> *mut ObjFunction {
-        let obj_function = ObjFunction {
-            object: Object {
-                next: *vm.objects(),
-                object_type: ObjectType::Function,
-                is_marked: false,
-            },
-            arity: 0,
-            upvalue_count: 0,
-            name: std::ptr::null_mut(),
-            chunk: Chunk::new(),
-        };
-        let object = crate::allocate::allocate(obj_function, vm, compiler);
+        let object = crate::allocate::allocate::<ObjFunction>( vm, compiler);
+        unsafe {
+            (&mut*object).write(ObjFunction {
+                object: Object {
+                    next: *vm.objects(),
+                    object_type: ObjectType::Function,
+                    is_marked: false,
+                },
+                arity: 0,
+                upvalue_count: 0,
+                name: std::ptr::null_mut(),
+                chunk: Chunk::new(),
+            });
+        }
+        let object = object as *mut ObjFunction;
         *vm.objects() = object as *mut Object;
         object
     }
@@ -106,18 +129,64 @@ impl Object {
         function: *const ObjFunction,
     ) -> *mut ObjClosure {
         let upvalue_count = unsafe { &*function }.upvalue_count;
-        let obj_closure = ObjClosure {
-            object: Object {
-                next: *vm.objects(),
-                object_type: ObjectType::Closure,
-                is_marked: false,
-            },
-            function,
-            upvalues: vec![std::ptr::null_mut(); upvalue_count],
-        };
-        let object = crate::allocate::allocate(obj_closure, vm, compiler);
+        let object = crate::allocate::allocate::<ObjClosure>(vm, compiler);
+        unsafe {
+            (&mut*object).write(ObjClosure {
+                object: Object {
+                    next: *vm.objects(),
+                    object_type: ObjectType::Closure,
+                    is_marked: false,
+                },
+                function,
+                upvalues: vec![std::ptr::null_mut(); upvalue_count],
+            });
+        }
+        let object = object as *mut ObjClosure;
         *vm.objects() = object as *mut Object;
         object
+    }
+
+    pub fn new_class(
+        vm: &mut VM,
+        compiler: Option<&mut Compiler>,
+        name: *mut ObjString
+    ) -> *mut ObjClass {
+        let class = crate::allocate::allocate(vm, compiler);
+        unsafe {
+            (&mut*class).write(ObjClass {
+                object: Object {
+                    next: *vm.objects(),
+                    object_type: ObjectType::Class,
+                    is_marked: false,
+                },
+                name
+            });
+        }
+        let class = class as *mut ObjClass;
+        *vm.objects() = class as *mut Object;
+        class
+    }
+
+    pub fn new_instance(
+        vm: &mut VM,
+        compiler: Option<&mut Compiler>,
+        class: *mut ObjClass
+    ) -> *mut ObjInstance {
+        let instance = crate::allocate::allocate(vm, compiler);
+        unsafe {
+            (&mut*instance).write(ObjInstance {
+                object: Object {
+                    next: *vm.objects(),
+                    object_type: ObjectType::Instance,
+                    is_marked: false,
+                },
+                class,
+                table: HashMap::new(),
+            });
+        }
+        let instance = instance as *mut ObjInstance;
+        *vm.objects() = instance as *mut Object;
+        instance
     }
 
     pub fn new_native(
@@ -125,15 +194,18 @@ impl Object {
         compiler: Option<&mut Compiler>,
         function: fn(*mut [Value]) -> Value,
     ) -> *mut ObjNative {
-        let obj_native = ObjNative {
-            object: Object {
-                next: *vm.objects(),
-                object_type: ObjectType::Native,
-                is_marked: false,
-            },
-            function,
-        };
-        let object = crate::allocate::allocate(obj_native, vm, compiler);
+        let object = crate::allocate::allocate::<ObjNative>(vm, compiler);
+        unsafe {
+            (&mut*object).write(ObjNative {
+                object: Object {
+                    next: *vm.objects(),
+                    object_type: ObjectType::Native,
+                    is_marked: false,
+                },
+                function,
+            });
+        }
+        let object = object as *mut ObjNative;
         *vm.objects() = object as *mut Object;
         object
     }
@@ -172,6 +244,16 @@ impl Object {
                     format!("{}", unsafe { *upvalue.location })
                 }
             }
+            ObjectType::Class => {
+                let class = object as *const ObjClass;
+                Object::to_string(unsafe{&*class}.name as *const Object)
+            }
+            ObjectType::Instance => {
+                let instance = object as *const ObjInstance;
+                let mut string = Object::to_string(unsafe{&*instance}.class as *const Object);
+                string.push_str(" instance");
+                string
+            }
             _ => todo!(),
         }
     }
@@ -191,7 +273,8 @@ pub enum ObjectType {
     Native,
     Closure,
     Upvalue,
-    _Instance,
+    Class,
+    Instance,
 }
 
 #[repr(C)]
@@ -252,6 +335,20 @@ pub struct ObjClosure {
 }
 
 #[repr(C)]
+#[derive(Clone)]
+pub struct ObjClass {
+    object: Object,
+    pub name: *const ObjString,
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct ObjInstance {
+    object: Object,
+    pub class: *const ObjClass,
+    pub table: HashMap<*mut ObjString, Value>
+}
+
 #[derive(Clone, Copy)]
 pub struct ObjNative {
     object: Object,

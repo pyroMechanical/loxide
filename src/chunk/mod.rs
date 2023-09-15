@@ -64,7 +64,10 @@ impl Chunk {
                 | OpCode::SetLocal
                 | OpCode::GetUpvalue
                 | OpCode::SetUpvalue
-                | OpCode::Call => {
+                | OpCode::Call
+                | OpCode::Class
+                | OpCode::GetProperty
+                | OpCode::SetProperty => {
                     let constant = self.code[index + 1];
                     println!("{:04} {} {:?} {}", index, line, operation, constant);
                     index + 2
