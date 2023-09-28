@@ -8,6 +8,20 @@ mod vm;
 
 use vm::*;
 
+#[test]
+fn test_vm()
+{
+    let mut vm = VM::new();
+    let _ = vm.interpret(
+    "class Brunch {
+        eggs() {print \"test!\";}
+    }
+      
+    var brunch = Brunch();
+    var eggs = brunch.eggs();
+    ".to_string());
+}
+
 fn repl(vm: &mut VM) {
     let input = std::io::stdin();
     'repl: loop {

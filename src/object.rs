@@ -13,7 +13,11 @@ pub struct Object {
 impl Object {
     pub fn free_object(object: *mut Object) -> usize{
         match unsafe { *object }.object_type {
-            ObjectType::String => {0} //handled by removing from interned string map
+            ObjectType::String => {
+                let obj_string = unsafe { Box::from_raw(object as *mut ObjString) };
+                std::mem::drop(obj_string);
+                std::mem::size_of::<ObjString>()
+            } //handled by removing from interned string map
             ObjectType::Function => {
                 let obj_function = unsafe { Box::from_raw(object as *mut ObjFunction) };
                 std::mem::drop(obj_function);
@@ -44,6 +48,11 @@ impl Object {
                 std::mem::drop(obj_instance);
                 std::mem::size_of::<ObjInstance>()
             },
+            ObjectType::BoundMethod => {
+                let obj_bound_method = unsafe {Box::from_raw(object as *mut ObjBoundMethod)};
+                std::mem::drop(obj_bound_method);
+                std::mem::size_of::<ObjBoundMethod>()
+            }
         }
     }
     pub fn new_string(
@@ -64,10 +73,9 @@ impl Object {
             });
         }
         let obj_string = string_ptr as *mut ObjString;
-        println!("allocated strings: {:?}", vm.strings());
         let ptr_str: *mut ObjString = match vm.strings().entry(string) {
             std::collections::hash_map::Entry::Occupied(occupied) => {
-                unsafe { Box::from_raw(obj_string) };
+                unsafe { let _ = Box::from_raw(obj_string); };
                 *occupied.get()
             }
             std::collections::hash_map::Entry::Vacant(vacant) => {
@@ -126,7 +134,7 @@ impl Object {
     pub fn new_closure(
         vm: &mut VM,
         compiler: Option<&mut Compiler>,
-        function: *const ObjFunction,
+        function: *mut ObjFunction,
     ) -> *mut ObjClosure {
         let upvalue_count = unsafe { &*function }.upvalue_count;
         let object = crate::allocate::allocate::<ObjClosure>(vm, compiler);
@@ -159,7 +167,8 @@ impl Object {
                     object_type: ObjectType::Class,
                     is_marked: false,
                 },
-                name
+                name,
+                methods: HashMap::new()
             });
         }
         let class = class as *mut ObjClass;
@@ -181,12 +190,35 @@ impl Object {
                     is_marked: false,
                 },
                 class,
-                table: HashMap::new(),
+                fields: HashMap::new(),
             });
         }
         let instance = instance as *mut ObjInstance;
         *vm.objects() = instance as *mut Object;
         instance
+    }
+
+    pub fn new_bound_method(
+        vm: &mut VM,
+        compiler: Option<&mut Compiler>,
+        receiver: Value,
+        method: *mut ObjClosure
+    ) -> *mut ObjBoundMethod {
+        let bound_method = crate::allocate::allocate(vm, compiler);
+        unsafe {
+            (&mut*bound_method).write(ObjBoundMethod {
+                object: Object {
+                    next: *vm.objects(),
+                    object_type: ObjectType::BoundMethod,
+                    is_marked: false,
+                },
+                receiver,
+                method
+            });
+        }
+        let bound_method = bound_method as *mut ObjBoundMethod;
+        *vm.objects() = bound_method as *mut Object;
+        bound_method
     }
 
     pub fn new_native(
@@ -254,7 +286,10 @@ impl Object {
                 string.push_str(" instance");
                 string
             }
-            _ => todo!(),
+            ObjectType::BoundMethod => {
+                let bound_method = object as *const ObjBoundMethod;
+                Object::to_string(unsafe{&*bound_method}.method as *mut Object)
+            }
         }
     }
 
@@ -275,6 +310,7 @@ pub enum ObjectType {
     Upvalue,
     Class,
     Instance,
+    BoundMethod
 }
 
 #[repr(C)]
@@ -330,7 +366,7 @@ pub struct ObjFunction {
 #[derive(Clone)]
 pub struct ObjClosure {
     object: Object,
-    pub function: *const ObjFunction,
+    pub function: *mut ObjFunction,
     pub upvalues: Vec<*mut ObjUpvalue>,
 }
 
@@ -338,17 +374,27 @@ pub struct ObjClosure {
 #[derive(Clone)]
 pub struct ObjClass {
     object: Object,
-    pub name: *const ObjString,
+    pub name: *mut ObjString,
+    pub methods: HashMap<*mut ObjString,  Value>,
 }
 
 #[repr(C)]
 #[derive(Clone)]
 pub struct ObjInstance {
     object: Object,
-    pub class: *const ObjClass,
-    pub table: HashMap<*mut ObjString, Value>
+    pub class: *mut ObjClass,
+    pub fields: HashMap<*mut ObjString, Value>
 }
 
+#[repr(C)]
+#[derive(Clone)]
+pub struct ObjBoundMethod {
+    object: Object,
+    pub receiver: Value,
+    pub method: *mut ObjClosure
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ObjNative {
     object: Object,

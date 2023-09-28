@@ -1,6 +1,6 @@
 use crate::chunk::{Chunk, OpCode};
 use crate::object::{
-    ObjClosure, ObjFunction, ObjNative, ObjString, ObjUpvalue, Object, ObjectType, ObjClass, ObjInstance,
+    ObjClosure, ObjFunction, ObjNative, ObjString, ObjUpvalue, Object, ObjectType, ObjClass, ObjInstance, ObjBoundMethod,
 };
 use crate::value::{copy_string, Value};
 use once_cell::sync::Lazy;
@@ -65,6 +65,7 @@ pub struct VM {
     pub(crate) bytes_allocated: usize,
     pub(crate) next_gc: usize,
     objects: *mut Object,
+    pub init_string: *mut ObjString,
     pub open_upvalues: *mut ObjUpvalue,
     gray_stack: Vec<*mut Object>,
 }
@@ -72,6 +73,7 @@ pub struct VM {
 impl Drop for VM {
     fn drop(&mut self) {
         self.free_objects();
+        println!("allocated bytes remaining: {}", self.bytes_allocated);
     }
 }
 
@@ -87,9 +89,11 @@ impl VM {
             bytes_allocated: 0,
             next_gc: 1024 * 1024,
             objects: std::ptr::null_mut(),
+            init_string: std::ptr::null_mut(),
             open_upvalues: std::ptr::null_mut(),
             gray_stack: Vec::new(),
         };
+        result.init_string = Object::new_string("init", &mut result, None);
         result.define_native("clock", clock_native);
         result
     }
@@ -123,10 +127,9 @@ impl VM {
     }
 
     pub fn free_objects(&mut self) {
-        //todo!() make this work for all types
         while !self.objects.is_null() {
             let next = unsafe { (&*self.objects).next_object() };
-            Object::free_object(self.objects);
+            self.bytes_allocated -= Object::free_object(self.objects);
             self.objects = next;
         }
     }
@@ -216,9 +219,19 @@ impl VM {
     pub fn call_value(&mut self, callee: Value, arg_count: usize) -> Result<(), InterpretError> {
         match callee {
             Value::Obj(object) => match unsafe { *object }.object_type {
+                ObjectType::BoundMethod => {
+                    let bound = object as *mut ObjBoundMethod;
+                    self.stack[self.stack_index - arg_count - 1] = unsafe{&*bound}.receiver;
+                    return self.call(unsafe{&*bound}.method, arg_count);
+                },
                 ObjectType::Class => {
                     let class = object as *mut ObjClass;
                     self.stack[self.stack_index - arg_count - 1] = Value::Obj(Object::new_instance(self, None, class) as *mut Object);
+                    if let Some(Value::Obj(method)) = unsafe{&*class}.methods.get(&self.init_string) {
+                        return self.call(*method as *mut ObjClosure, arg_count);
+                    } else if arg_count != 0 {
+                        return self.runtime_error(format!("Expected 0 arguments but got {}.", arg_count));
+                    };
                     Ok(())
                 },
                 ObjectType::Closure => return self.call(object as *mut ObjClosure, arg_count),
@@ -232,6 +245,60 @@ impl VM {
                 _ => return self.runtime_error("Can only call functions and classes.".to_string()),
             },
             _ => return self.runtime_error("Can only call functions and classes.".to_string()),
+        }
+    }
+    
+    fn invoke_from_class(&mut self, class: *mut ObjClass, name: *mut ObjString, arg_count: usize) -> Result<(), InterpretError> {
+        match unsafe{&*class}.methods.get(&name) {
+            None => return self.runtime_error(format!("Undefined property '{}'.", Object::to_string(name as *const Object))),
+            Some(method) => {
+                if let Value::Obj(method) = *method {
+                    self.call(method as *mut ObjClosure, arg_count)
+                }
+                else {
+                    self.runtime_error(format!(
+                        "Provided value was not a method! this is a compiler error."
+                    ))
+                }
+            }
+        }
+    }
+
+    fn invoke(&mut self, name: *mut ObjString, arg_count: usize) -> Result<(), InterpretError> {
+        let receiver = self.peek(arg_count)?;
+        if let Value::Obj(receiver) = *receiver {
+            if unsafe{&*receiver}.object_type != ObjectType::Instance {
+                return self.runtime_error("Only instances have methods.".to_string());
+            }
+            let instance = receiver as *mut ObjInstance;
+            if let Some(&value) = unsafe{&*instance}.fields.get(&name) {
+                self.stack[self.stack_index - arg_count - 1] = value;
+                return self.call_value(value, arg_count);
+            }else {
+                return self.invoke_from_class(unsafe{&*instance}.class, name, arg_count);
+            }
+        }
+        else {
+            return self.runtime_error("Only instances have methods.".to_string());
+        }
+    }
+
+    fn bind_method(&mut self, class: *mut ObjClass, name: *mut ObjString) -> Result<(), InterpretError> {
+        let method = unsafe{&*class}.methods.get(&name);
+        match method {
+            Some(method) => {
+                if let Value::Obj(method) = *method {
+                    let receiver = *self.peek(0)?;
+                    let bound = Object::new_bound_method(self, None, receiver, method as *mut ObjClosure);
+                    self.pop()?;
+                    self.push(Value::Obj(bound as *mut Object))
+                } else {
+                    self.runtime_error(format!(
+                        "Provided value was not a method! this is a compiler error."
+                    ))
+                }
+            },
+            None => self.runtime_error(format!("Undefined property {}", Object::to_string(name as *const Object))),
         }
     }
 
@@ -263,6 +330,23 @@ impl VM {
             upvalue.location = std::ptr::null_mut(); //rust *really* dislikes self pointers. cover this
             self.open_upvalues = upvalue.next;
         }
+    }
+
+    fn define_method(&mut self, name: *mut ObjString) -> Result<(), InterpretError> {
+        let method = *self.peek(0)?;
+        let class = *self.peek(1)?;
+        if let Value::Obj(class) = class {
+            let class = class as *mut ObjClass;
+            unsafe {
+                (&mut*class).methods.insert(name, method);
+            }
+        } else {
+            self.runtime_error(format!(
+                "Provided global name was not a string! this is a compiler error."
+            ))?;
+        }
+        self.pop()?;
+        Ok(())
     }
 
     pub fn push(&mut self, value: Value) -> Result<(), InterpretError> {
@@ -311,6 +395,11 @@ impl VM {
 
     pub fn run(&mut self) -> Result<(), InterpretError> {
         loop {
+            print!("[ ");
+            for value in self.stack() {
+                print!("{}, ", value);
+            }
+            println!("]");
             let read_op = self.read_operation();
             match read_op {
                 None => return Ok(()), //must return something if there is no code
@@ -334,11 +423,23 @@ impl VM {
                         let callee = *self.peek(arg_count as usize)?;
                         self.call_value(callee, arg_count as usize)?;
                     }
+                    OpCode::Invoke => {
+                        let global = self.read_byte();
+                        if let Value::Obj(string) = self.current_chunk().constants[global as usize] {
+                            let method = string as *mut ObjString;
+                            let arg_count = self.read_byte() as usize;
+                            self.invoke(method, arg_count)?;
+                        } else {
+                            self.runtime_error(format!(
+                                "Provided global name was not a string! this is a compiler error."
+                            ))?;
+                        }
+                    }
                     OpCode::Closure => {
                         let index = self.read_byte();
                         if let Value::Obj(function) = self.current_chunk().constants[index as usize]
                         {
-                            let function = function as *const ObjFunction;
+                            let function = function as *mut ObjFunction;
                             let closure = Object::new_closure(self, None, function);
                             self.push(Value::Obj(closure as *mut Object))?;
                             for i in 0..unsafe { &*function }.upvalue_count {
@@ -369,6 +470,17 @@ impl VM {
                             let name = string as *mut ObjString;
                             let class = Value::Obj(Object::new_class(self, None, name) as *mut Object);
                             self.push(class)?;
+                        } else {
+                            self.runtime_error(format!(
+                                "Provided global name was not a string! this is a compiler error."
+                            ))?;
+                        }
+                    }
+                    OpCode::Method => {
+                        let global = self.read_byte();
+                        if let Value::Obj(string) = self.current_chunk().constants[global as usize] {
+                            let name = string as *mut ObjString;
+                            self.define_method(name)?;
                         } else {
                             self.runtime_error(format!(
                                 "Provided global name was not a string! this is a compiler error."
@@ -506,13 +618,13 @@ impl VM {
                             let name = self.read_byte();
                             if let Value::Obj(name) = self.current_chunk().constants[name as usize] {
                                 let name = name as *mut ObjString;
-                                match unsafe{&*instance}.table.get(&name) {
+                                match unsafe{&*instance}.fields.get(&name) {
                                     Some(value) => {
                                         self.pop()?;
                                         self.push(*value)?;
                                     },
                                     None => {
-                                        return self.runtime_error(format!("Undefined property '{}'.", Object::to_string(name as *const Object)))
+                                        self.bind_method(unsafe{&*instance}.class, name)?;
                                     },
                                 }
                             }
@@ -531,7 +643,7 @@ impl VM {
                             let name = self.read_byte();
                             if let Value::Obj(name) = self.current_chunk().constants[name as usize] {
                                 unsafe{
-                                    (&mut*instance).table.insert(name as *mut ObjString, *self.peek(0)?);
+                                    (&mut*instance).fields.insert(name as *mut ObjString, *self.peek(0)?);
                                 }
                                 let value = self.pop()?;
                                 self.pop()?;

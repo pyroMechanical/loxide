@@ -29,9 +29,11 @@ pub enum OpCode {
     JumpIfFalse,
     Loop,
     Call,
+    Invoke,
     Closure,
     CloseUpvalue,
     Class,
+    Method,
     Return,
 }
 impl TryInto<OpCode> for u8 {

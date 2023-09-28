@@ -123,6 +123,11 @@ fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
             infix: Some(&Parser::or),
             precedence: Precedence::Or,
         },
+        TokenKind::This => ParseRule {
+            prefix: Some(&Parser::this),
+            infix: None,
+            precedence: Precedence::None,
+        },
         TokenKind::True | TokenKind::False | TokenKind::Nil => ParseRule {
             prefix: Some(&Parser::literal),
             infix: None,
@@ -186,6 +191,8 @@ impl<'a> Local<'a> {
 #[derive(Clone, Copy, PartialEq)]
 enum FunctionType {
     Function,
+    Initializer,
+    Method,
     Script,
 }
 #[derive(Clone, Copy)]
@@ -205,12 +212,7 @@ pub struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    fn new(vm: &mut VM, name: Option<Token<'a>>) -> Self {
-        let function_type = if name.is_none() {
-            FunctionType::Script
-        } else {
-            FunctionType::Function
-        };
+    fn new(vm: &mut VM, name: Option<Token<'a>>, function_type: FunctionType, mut existing: Option<&mut Compiler<'a>>) -> Self {
         let mut compiler = Self {
             enclosing: std::ptr::null_mut(),
             function: std::ptr::null_mut(),
@@ -223,9 +225,13 @@ impl<'a> Compiler<'a> {
             }; 256],
             scope_depth: 0,
         };
-        let function = Object::new_function(vm, Some(&mut compiler));
+        let function = Object::new_function(vm, existing.as_deref_mut());
         compiler.function = function;
         compiler.locals[0].depth = Some(0);
+        if function_type != FunctionType::Function {
+            compiler.locals[0].name = "this";
+        }
+        compiler.enclosing = existing.as_deref_mut().map(|x| x as *mut _).unwrap_or(std::ptr::null_mut());
 
         let function_name = name.map(|token| {
             let str = token.as_str();
@@ -319,11 +325,14 @@ impl<'a> Compiler<'a> {
     pub fn mark_compiler_roots(&mut self, gray_stack: &mut Vec<*mut Object>) {
         let mut compiler = self as *mut Compiler<'a>;
         while !compiler.is_null() {
-            let current = unsafe { &*compiler };
-            crate::allocate::mark_object(current.function as *mut Object, gray_stack);
-            compiler = current.enclosing;
+            crate::allocate::mark_object(unsafe{&mut *compiler}.function as *mut Object, gray_stack);
+            compiler = unsafe{&*compiler}.enclosing;
         }
     }
+}
+
+pub struct ClassCompiler {
+    enclosing: *mut ClassCompiler
 }
 
 pub struct Parser<'a> {
@@ -331,6 +340,7 @@ pub struct Parser<'a> {
     previous: Token<'a>,
     current: Token<'a>,
     compiler: Compiler<'a>,
+    class_compiler: *mut ClassCompiler,
     vm: &'a mut VM,
     panic_mode: bool,
     had_error: bool,
@@ -342,7 +352,8 @@ impl<'a> Parser<'a> {
             scanner: Scanner::new(source),
             previous: Token::default(),
             current: Token::default(),
-            compiler: Compiler::new(vm, None),
+            compiler: Compiler::new(vm, None, FunctionType::Script, None),
+            class_compiler: std::ptr::null_mut(),
             vm,
             panic_mode: false,
             had_error: false,
@@ -509,10 +520,10 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn named_variable(&mut self, can_assign: bool) {
+    fn named_variable(&mut self, token: Token, can_assign: bool) {
         let get_op: OpCode;
         let set_op: OpCode;
-        let name = self.previous.as_str();
+        let name = token.as_str();
         let arg = self.resolve_local(name);
         let arg = if arg.is_some() {
             get_op = OpCode::GetLocal;
@@ -537,7 +548,15 @@ impl<'a> Parser<'a> {
     }
 
     fn variable(&mut self, can_assign: bool) {
-        self.named_variable(can_assign);
+        self.named_variable(self.previous, can_assign);
+    }
+
+    fn this(&mut self, _: bool) {
+        if self.class_compiler.is_null() {
+            error(self.previous, "Can't use 'this' outside of a class.", &mut self.had_error, &mut self.panic_mode);
+            return;
+        }
+        self.variable(false);
     }
 
     fn grouping(&mut self, _: bool) {
@@ -609,6 +628,10 @@ impl<'a> Parser<'a> {
         if can_assign && self.match_token(TokenKind::Equal) {
             self.expression();
             self.emit_byte_pair(OpCode::SetProperty, name);
+        } else if self.match_token(TokenKind::LeftParen) {
+            let arg_count = self.argument_list();
+            self.emit_byte_pair(OpCode::Invoke, name);
+            self.emit_byte(arg_count);
         }
         else {
             self.emit_byte_pair(OpCode::GetProperty, name);
@@ -759,6 +782,9 @@ impl<'a> Parser<'a> {
         if self.match_token(TokenKind::Semicolon) {
             self.emit_return();
         } else {
+            if self.compiler.function_type == FunctionType::Initializer {
+                error(self.previous, "Can't return a value from an initializer.", &mut self.had_error, &mut self.panic_mode);
+            }
             self.expression();
             self.consume(TokenKind::Semicolon, "Expect ';' after return value.");
             self.emit_byte(OpCode::Return);
@@ -854,8 +880,8 @@ impl<'a> Parser<'a> {
         self.consume(TokenKind::RightBrace, "Expect '}' after block.");
     }
 
-    fn function(&mut self, fun_type: FunctionType) {
-        let compiler = Compiler::new(self.vm, Some(self.previous));
+    fn function(&mut self, function_type: FunctionType) {
+        let compiler = Compiler::new(self.vm, Some(self.previous), function_type, Some(&mut self.compiler));
         let mut old_compiler = std::mem::replace(&mut self.compiler, compiler);
         self.compiler.enclosing = &mut old_compiler as *mut _;
         self.begin_scope();
@@ -893,16 +919,40 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn method(&mut self) {
+        self.consume(TokenKind::Identifier, "Expect method name.");
+        let constant = self.identifier_constant();
+        let function_type = if self.previous.as_str() == "init" {
+            FunctionType::Initializer
+        } else {
+            FunctionType::Method
+        };
+        self.function(function_type);
+        self.emit_byte_pair(OpCode::Method, constant);
+    }
+
     fn class_declaration(&mut self) {
         self.consume(TokenKind::Identifier, "Expect class name.");
+        let class_name = self.previous;
         let name_constant = self.identifier_constant();
         self.declare_variable();
 
         self.emit_byte_pair(OpCode::Class, name_constant);
         self.define_variable(name_constant);
 
+        let mut class_compiler = ClassCompiler {enclosing: std::ptr::null_mut()};
+        let old_class_compiler = std::mem::replace(&mut self.class_compiler, &mut class_compiler as *mut _);
+        unsafe {
+            (*self.class_compiler).enclosing = old_class_compiler;
+        }
+        self.named_variable(class_name, false);
         self.consume(TokenKind::LeftBrace, "Expect '{' before class body.");
+        while !self.check(TokenKind::RightBrace) {
+            self.method();
+        }
         self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
+        self.emit_byte(OpCode::Pop);
+        let _class_compiler = std::mem::replace(&mut self.class_compiler, old_class_compiler);
     }
 
     fn fun_declaration(&mut self) {
@@ -987,11 +1037,16 @@ impl<'a> Parser<'a> {
     }
 
     fn emit_return(&mut self) {
-        self.emit_byte(OpCode::Nil);
+        if self.compiler.function_type == FunctionType::Initializer {
+            self.emit_byte_pair(OpCode::GetLocal, 0);
+        }
+        else {
+            self.emit_byte(OpCode::Nil);
+        }
         self.emit_byte(OpCode::Return);
     }
 
-    fn end(&mut self) -> *const ObjFunction {
+    fn end(&mut self) -> *mut ObjFunction {
         self.emit_return();
         self.compiler.function
     }
@@ -1017,7 +1072,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn compile<'a>(source: &str, vm: &'a mut VM) -> Result<*const ObjFunction, InterpretError> {
+pub fn compile<'a>(source: &str, vm: &'a mut VM) -> Result<*mut ObjFunction, InterpretError> {
     let mut parser = Parser::new(source, vm);
     parser.advance();
     while !parser.scanner.is_at_end() {
@@ -1026,7 +1081,6 @@ pub fn compile<'a>(source: &str, vm: &'a mut VM) -> Result<*const ObjFunction, I
     let function = parser.end();
     match parser.had_error {
         false => {
-            #[cfg(debug_assertions)]
             parser.current_chunk().disassemble();
             Ok(function)
         }

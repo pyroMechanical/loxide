@@ -67,7 +67,8 @@ impl Chunk {
                 | OpCode::Call
                 | OpCode::Class
                 | OpCode::GetProperty
-                | OpCode::SetProperty => {
+                | OpCode::SetProperty 
+                | OpCode::Method => {
                     let constant = self.code[index + 1];
                     println!("{:04} {} {:?} {}", index, line, operation, constant);
                     index + 2
@@ -79,9 +80,16 @@ impl Chunk {
                     println!("{:04} {} {:?} {}", index, line, operation, offset);
                     index + 3
                 }
+                OpCode::Invoke => {
+                    let constant = self.code[index + 1];
+                    let arg_count = self.code[index + 2];
+                    println!("{:04} {} {:?} ({} args) {} {}", index, line, operation, arg_count, constant, self.constants[constant as usize]);
+                    index + 3
+                }
                 OpCode::Closure => {
                     let mut offset = index + 1;
                     let constant = self.code[offset];
+                    offset += 1;
                     println!(
                         "{:04} {} {:?} {} {}",
                         index, line, operation, constant, self.constants[constant as usize]
