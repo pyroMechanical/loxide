@@ -54,6 +54,9 @@ pub struct Token<'a> {
 }
 
 impl<'a> Token<'a> {
+    pub fn synthetic_new(string: &'a str) -> Token<'a> {
+        Token{kind: TokenKind::Identifier, line: 0, string}
+    }
     pub fn kind(&self) -> TokenKind {
         self.kind
     }

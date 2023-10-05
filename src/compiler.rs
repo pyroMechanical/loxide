@@ -123,6 +123,11 @@ fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
             infix: Some(&Parser::or),
             precedence: Precedence::Or,
         },
+        TokenKind::Super => ParseRule {
+            prefix: Some(&Parser::super_),
+            infix: None,
+            precedence: Precedence::None,
+        },
         TokenKind::This => ParseRule {
             prefix: Some(&Parser::this),
             infix: None,
@@ -299,7 +304,6 @@ impl<'a> Compiler<'a> {
         had_error: &mut bool,
         panic_mode: &mut bool,
     ) -> Option<u8> {
-        println!("upvalue index: {}", index);
         let upvalue_count = unsafe { &*self.function }.upvalue_count;
         for i in 0..upvalue_count {
             let upvalue = self.upvalues[i];
@@ -332,7 +336,8 @@ impl<'a> Compiler<'a> {
 }
 
 pub struct ClassCompiler {
-    enclosing: *mut ClassCompiler
+    enclosing: *mut ClassCompiler,
+    has_superclass: bool,
 }
 
 pub struct Parser<'a> {
@@ -534,7 +539,7 @@ impl<'a> Parser<'a> {
             set_op = OpCode::SetUpvalue;
             arg
         } else {
-            let constant = self.identifier_constant();
+            let constant = self.identifier_constant(token);
             get_op = OpCode::GetGlobal;
             set_op = OpCode::SetGlobal;
             constant
@@ -549,6 +554,24 @@ impl<'a> Parser<'a> {
 
     fn variable(&mut self, can_assign: bool) {
         self.named_variable(self.previous, can_assign);
+    }
+
+    fn super_(&mut self, _: bool) {
+
+        if self.class_compiler.is_null() {
+            error(self.previous, "Can't use 'super' outside of a class.", &mut self.had_error, &mut self.panic_mode);
+        } else if !unsafe{&*self.class_compiler}.has_superclass {
+            error(self.previous, "Can't use 'super' in a class with no superclass.", &mut self.had_error, &mut self.panic_mode);
+        }
+
+        self.consume(TokenKind::Dot, "Expect '.' after 'super'.");
+        self.consume(TokenKind::Identifier, "Expect superclass method name.");
+        let name = self.identifier_constant(self.previous);
+
+        self.named_variable(Token::synthetic_new("this"), false);
+        self.named_variable(Token::synthetic_new("super"), false);
+        self.emit_byte_pair(OpCode::GetSuper, name);
+        
     }
 
     fn this(&mut self, _: bool) {
@@ -623,7 +646,7 @@ impl<'a> Parser<'a> {
 
     fn dot(&mut self, can_assign: bool) {
         self.consume(TokenKind::Identifier, "Expect property name after '.'.");
-        let name = self.identifier_constant();
+        let name = self.identifier_constant(self.previous);
 
         if can_assign && self.match_token(TokenKind::Equal) {
             self.expression();
@@ -673,15 +696,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn identifier_constant(&mut self) -> u8 {
-        let str_obj = Object::new_string(self.previous.as_str(), self.vm, Some(&mut self.compiler));
+    fn identifier_constant(&mut self, name: Token) -> u8 {
+        let str_obj = Object::new_string(name.as_str(), self.vm, Some(&mut self.compiler));
         return self
             .current_chunk()
             .add_constant(Value::Obj(str_obj as *mut Object)) as u8;
     }
 
     fn add_local(&mut self, name: &'a str) {
-        if self.compiler.local_count == (u8::MAX as usize) + 1 {
+        if  self.compiler.local_count == (u8::MAX as usize) + 1 {
             error(
                 self.previous,
                 "Too many local variables in function.",
@@ -732,7 +755,7 @@ impl<'a> Parser<'a> {
             return 0;
         }
 
-        return self.identifier_constant();
+        return self.identifier_constant(self.previous);
     }
 
     fn define_variable(&mut self, global: u8) {
@@ -921,7 +944,7 @@ impl<'a> Parser<'a> {
 
     fn method(&mut self) {
         self.consume(TokenKind::Identifier, "Expect method name.");
-        let constant = self.identifier_constant();
+        let constant = self.identifier_constant(self.previous);
         let function_type = if self.previous.as_str() == "init" {
             FunctionType::Initializer
         } else {
@@ -934,17 +957,37 @@ impl<'a> Parser<'a> {
     fn class_declaration(&mut self) {
         self.consume(TokenKind::Identifier, "Expect class name.");
         let class_name = self.previous;
-        let name_constant = self.identifier_constant();
+        let name_constant = self.identifier_constant(self.previous);
         self.declare_variable();
 
         self.emit_byte_pair(OpCode::Class, name_constant);
         self.define_variable(name_constant);
 
-        let mut class_compiler = ClassCompiler {enclosing: std::ptr::null_mut()};
+        let mut class_compiler = ClassCompiler {enclosing: std::ptr::null_mut(), has_superclass: false};
         let old_class_compiler = std::mem::replace(&mut self.class_compiler, &mut class_compiler as *mut _);
         unsafe {
             (*self.class_compiler).enclosing = old_class_compiler;
         }
+
+        if self.match_token(TokenKind::Less) {
+            self.consume(TokenKind::Identifier, "Expect superclass name.");
+            self.variable(false);
+
+            if class_name.as_str() == self.previous.as_str() {
+                error(self.previous, "A class can't inherit from itself.", &mut self.had_error, &mut self.panic_mode);
+            }
+
+            self.begin_scope();
+            self.add_local("super");
+            self.define_variable(0);
+
+            self.named_variable(class_name, false);
+            self.emit_byte(OpCode::Inherit);
+            unsafe {
+                (*self.class_compiler).has_superclass = true;
+            }
+        }
+
         self.named_variable(class_name, false);
         self.consume(TokenKind::LeftBrace, "Expect '{' before class body.");
         while !self.check(TokenKind::RightBrace) {
@@ -952,6 +995,9 @@ impl<'a> Parser<'a> {
         }
         self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
         self.emit_byte(OpCode::Pop);
+        if unsafe{&*self.class_compiler}.has_superclass {
+            self.end_scope();
+        }
         let _class_compiler = std::mem::replace(&mut self.class_compiler, old_class_compiler);
     }
 

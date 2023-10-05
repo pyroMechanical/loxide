@@ -324,10 +324,10 @@ impl VM {
     }
 
     fn close_upvalues(&mut self, last: *mut Value) {
-        while !self.open_upvalues.is_null() && unsafe { &*self.open_upvalues }.location > last {
+        while !self.open_upvalues.is_null() && unsafe { &*self.open_upvalues }.location >= last {
             let upvalue = unsafe { &mut *self.open_upvalues };
             upvalue.closed = unsafe { *upvalue.location };
-            upvalue.location = std::ptr::null_mut(); //rust *really* dislikes self pointers. cover this
+            upvalue.location = std::ptr::null_mut(); //rust *really* dislikes self pointers. cover this in writeup
             self.open_upvalues = upvalue.next;
         }
     }
@@ -395,11 +395,11 @@ impl VM {
 
     pub fn run(&mut self) -> Result<(), InterpretError> {
         loop {
-            print!("[ ");
-            for value in self.stack() {
-                print!("{}, ", value);
-            }
-            println!("]");
+            //print!("[ ");
+            //for value in self.stack() {
+            //    print!("{}, ", value);
+            //}
+            //println!("]");
             let read_op = self.read_operation();
             match read_op {
                 None => return Ok(()), //must return something if there is no code
@@ -474,6 +474,25 @@ impl VM {
                             self.runtime_error(format!(
                                 "Provided global name was not a string! this is a compiler error."
                             ))?;
+                        }
+                    }
+                    OpCode::Inherit => {
+                        if let (Value::Obj(superclass), Value::Obj(subclass)) = (*self.peek(1)?, *self.peek(0)?) {
+                            if unsafe{&*superclass}.object_type != ObjectType::Class {
+                                self.runtime_error("Superclass must be a class.".to_string())?;
+                            }
+                            let superclass = superclass as *mut ObjClass;
+                            let subclass = subclass as *mut ObjClass;
+
+                            let subclass_methods = &mut unsafe{&mut *subclass}.methods;
+
+                            for (name, method) in &unsafe{&*superclass}.methods {
+                                subclass_methods.insert(*name, *method);
+                            }
+                            self.pop()?;
+                        }
+                        else {
+                            self.runtime_error(format!("Provided value was not a class! this is a compiler error."))?;
                         }
                     }
                     OpCode::Method => {
@@ -649,6 +668,24 @@ impl VM {
                                 self.pop()?;
                                 self.push(value)?;
                             }
+                        }
+                    }
+                    OpCode::GetSuper => {
+                        let name = self.read_byte();
+                        if let Value::Obj(name) = self.current_chunk().constants[name as usize] {
+                            let name = name as *mut ObjString;
+                            let superclass = self.pop()?;
+                            if let Value::Obj(superclass) = superclass {
+                                let superclass = superclass as *mut ObjClass;
+
+                                self.bind_method(superclass, name)?;
+                            }
+                            else {
+                                todo!();
+                            }
+                        }
+                        else {
+                            todo!();
                         }
                     }
                     OpCode::Equal => {

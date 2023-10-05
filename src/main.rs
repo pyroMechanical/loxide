@@ -13,13 +13,27 @@ fn test_vm()
 {
     let mut vm = VM::new();
     let _ = vm.interpret(
-    "class Brunch {
-        eggs() {print \"test!\";}
-    }
+    r#"
+    class Doughnut {
+        cook() {
+          print "Dunk in the fryer.";
+          this.finish("sprinkles");
+        }
       
-    var brunch = Brunch();
-    var eggs = brunch.eggs();
-    ".to_string());
+        finish(ingredient) {
+          print "Finish with " + ingredient;
+        }
+      }
+      
+      class Cruller < Doughnut {
+        finish(ingredient) {
+          // No sprinkles, always icing.
+          super.finish("icing");
+        }
+      }
+    var cruller = Cruller();
+    cruller.cook();
+    "#.to_string());
 }
 
 fn repl(vm: &mut VM) {

@@ -15,6 +15,7 @@ pub enum OpCode {
     SetUpvalue,
     GetProperty,
     SetProperty,
+    GetSuper,
     Equal,
     Greater,
     Less,
@@ -33,6 +34,7 @@ pub enum OpCode {
     Closure,
     CloseUpvalue,
     Class,
+    Inherit,
     Method,
     Return,
 }
