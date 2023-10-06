@@ -435,6 +435,26 @@ impl VM {
                             ))?;
                         }
                     }
+                    OpCode::SuperInvoke => {
+                        let global = self.read_byte();
+                        if let Value::Obj(string) = self.current_chunk().constants[global as usize] {
+                            let superclass = self.pop()?;
+                            if let Value::Obj(superclass) = superclass {
+                                let superclass = superclass as *mut ObjClass;
+                                let method = string as *mut ObjString;
+                                let arg_count = self.read_byte() as usize;
+                                self.invoke_from_class(superclass, method, arg_count)?;
+                            } else {
+                                self.runtime_error(format!(
+                                    "Provided super was not a class! this is a compiler error."
+                                ))?;
+                            }
+                        } else {
+                            self.runtime_error(format!(
+                                "Provided global name was not a string! this is a compiler error."
+                            ))?;
+                        }
+                    }
                     OpCode::Closure => {
                         let index = self.read_byte();
                         if let Value::Obj(function) = self.current_chunk().constants[index as usize]

@@ -81,7 +81,8 @@ impl Chunk {
                     println!("{:04} {} {:?} {}", index, line, operation, offset);
                     index + 3
                 }
-                OpCode::Invoke => {
+                OpCode::Invoke
+                | OpCode::SuperInvoke => {
                     let constant = self.code[index + 1];
                     let arg_count = self.code[index + 2];
                     println!("{:04} {} {:?} ({} args) {} {}", index, line, operation, arg_count, constant, self.constants[constant as usize]);

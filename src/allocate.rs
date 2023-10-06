@@ -13,7 +13,7 @@ use crate::{
 pub fn allocate<T>(vm: &mut VM, compiler: Option<&mut Compiler>) -> *mut MaybeUninit<T> {
     #[cfg(debug_assertions)]
     {
-        //collect_garbage(vm, compiler);
+        collect_garbage(vm, compiler);
     }
     #[cfg(not(debug_assertions))]
     if vm.bytes_allocated > vm.next_gc {

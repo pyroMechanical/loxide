@@ -569,8 +569,16 @@ impl<'a> Parser<'a> {
         let name = self.identifier_constant(self.previous);
 
         self.named_variable(Token::synthetic_new("this"), false);
-        self.named_variable(Token::synthetic_new("super"), false);
-        self.emit_byte_pair(OpCode::GetSuper, name);
+        if self.match_token(TokenKind::LeftParen) {
+            let arg_count = self.argument_list();
+            self.named_variable(Token::synthetic_new("super"), false);
+            self.emit_byte_pair(OpCode::SuperInvoke, name);
+            self.emit_byte(arg_count);
+        }
+        else {
+            self.named_variable(Token::synthetic_new("super"), false);
+            self.emit_byte_pair(OpCode::GetSuper, name);
+        }
         
     }
 
