@@ -1,6 +1,7 @@
 use crate::{
     chunk::{operations::OpCode, Chunk},
-    object::{ObjFunction, Object},
+    gc::Gc,
+    object::{ObjFunction, ObjString},
     scanner::{Scanner, Token, TokenKind},
     value::copy_string,
     value::Value,
@@ -208,7 +209,7 @@ struct Upvalue {
 
 pub struct Compiler<'a> {
     enclosing: *mut Compiler<'a>,
-    function: *mut ObjFunction,
+    function: Gc<ObjFunction>,
     function_type: FunctionType,
     locals: [Local<'a>; 256],
     local_count: usize,
@@ -217,10 +218,18 @@ pub struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    fn new(vm: &mut VM, name: Option<Token<'a>>, function_type: FunctionType, mut existing: Option<&mut Compiler<'a>>) -> Self {
+    fn new(
+        vm: &mut VM,
+        name: Option<Token<'a>>,
+        function_type: FunctionType,
+        mut existing: Option<&mut Compiler<'a>>,
+    ) -> Self {
         let mut compiler = Self {
             enclosing: std::ptr::null_mut(),
-            function: std::ptr::null_mut(),
+            function: ObjFunction::new(name.map(|token| {
+                let str = token.as_str();
+                ObjString::new(str.to_string())
+            })),
             function_type,
             locals: [Local::new("", None); 256],
             local_count: 1,
@@ -230,21 +239,14 @@ impl<'a> Compiler<'a> {
             }; 256],
             scope_depth: 0,
         };
-        let function = Object::new_function(vm, existing.as_deref_mut());
-        compiler.function = function;
         compiler.locals[0].depth = Some(0);
         if function_type != FunctionType::Function {
             compiler.locals[0].name = "this";
         }
-        compiler.enclosing = existing.as_deref_mut().map(|x| x as *mut _).unwrap_or(std::ptr::null_mut());
-
-        let function_name = name.map(|token| {
-            let str = token.as_str();
-            Object::new_string(str, vm, Some(&mut compiler))
-        });
-        unsafe {
-            (*compiler.function).name = function_name.unwrap_or(std::ptr::null_mut());
-        }
+        compiler.enclosing = existing
+            .as_deref_mut()
+            .map(|x| x as *mut _)
+            .unwrap_or(std::ptr::null_mut());
         compiler
     }
 
@@ -304,7 +306,7 @@ impl<'a> Compiler<'a> {
         had_error: &mut bool,
         panic_mode: &mut bool,
     ) -> Option<u8> {
-        let upvalue_count = unsafe { &*self.function }.upvalue_count;
+        let upvalue_count = self.function.borrow().upvalue_count;
         for i in 0..upvalue_count {
             let upvalue = self.upvalues[i];
             if upvalue.index == index && upvalue.is_local == is_local {
@@ -322,16 +324,8 @@ impl<'a> Compiler<'a> {
 
         self.upvalues[upvalue_count].is_local = is_local;
         self.upvalues[upvalue_count].index = index;
-        unsafe { &mut *self.function }.upvalue_count += 1;
+        self.function.borrow_mut().upvalue_count += 1;
         return Some(upvalue_count as u8);
-    }
-
-    pub fn mark_compiler_roots(&mut self, gray_stack: &mut Vec<*mut Object>) {
-        let mut compiler = self as *mut Compiler<'a>;
-        while !compiler.is_null() {
-            crate::allocate::mark_object(unsafe{&mut *compiler}.function as *mut Object, gray_stack);
-            compiler = unsafe{&*compiler}.enclosing;
-        }
     }
 }
 
@@ -410,13 +404,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn current_chunk(&mut self) -> &mut Chunk {
-        &mut unsafe { &mut *self.compiler.function }.chunk
+    fn current_chunk(&mut self) -> Gc<Chunk> {
+        self.compiler.function.borrow().chunk.clone()
     }
 
     fn emit_byte<T: Into<u8>>(&mut self, byte: T) {
         let line = self.current.line();
-        self.current_chunk().add_byte(byte.into(), line);
+        self.current_chunk().borrow_mut().add_byte(byte.into(), line);
     }
 
     fn emit_byte_pair<T1: Into<u8>, T2: Into<u8>>(&mut self, byte1: T1, byte2: T2) {
@@ -427,7 +421,7 @@ impl<'a> Parser<'a> {
     fn emit_loop(&mut self, loop_start: usize) {
         self.emit_byte(OpCode::Loop);
 
-        let offset = self.current_chunk().code.len() - loop_start + 2;
+        let offset = self.current_chunk().borrow().code.len() - loop_start + 2;
         if offset > u16::MAX as usize {
             error(
                 self.previous,
@@ -445,11 +439,11 @@ impl<'a> Parser<'a> {
         self.emit_byte(op);
         self.emit_byte(0xFF);
         self.emit_byte(0xFF);
-        return self.current_chunk().code.len() - 2;
+        return self.current_chunk().borrow().code.len() - 2;
     }
 
     fn make_constant(&mut self, value: Value) -> u8 {
-        let constant = self.current_chunk().add_constant(value);
+        let constant = self.current_chunk().borrow_mut().add_constant(value);
         if constant > 255 {
             error(
                 self.current,
@@ -468,7 +462,7 @@ impl<'a> Parser<'a> {
     }
 
     fn patch_jump(&mut self, offset: usize) {
-        let jump = self.current_chunk().code.len() - offset - 2;
+        let jump = self.current_chunk().borrow().code.len() - offset - 2;
         if jump > u16::MAX as usize {
             error(
                 self.previous,
@@ -478,8 +472,8 @@ impl<'a> Parser<'a> {
             );
         }
 
-        self.current_chunk().code[offset] = ((jump >> 8) & 0xFF) as u8;
-        self.current_chunk().code[offset + 1] = (jump & 0xFF) as u8;
+        self.current_chunk().borrow_mut().code[offset] = ((jump >> 8) & 0xFF) as u8;
+        self.current_chunk().borrow_mut().code[offset + 1] = (jump & 0xFF) as u8;
     }
 
     fn number(&mut self, _: bool) {
@@ -503,7 +497,7 @@ impl<'a> Parser<'a> {
             self.vm,
             Some(&mut self.compiler),
         );
-        let index = self.current_chunk().add_constant(value);
+        let index = self.current_chunk().borrow_mut().add_constant(value);
         self.emit_byte_pair(OpCode::Constant, index as u8);
     }
 
@@ -557,11 +551,20 @@ impl<'a> Parser<'a> {
     }
 
     fn super_(&mut self, _: bool) {
-
         if self.class_compiler.is_null() {
-            error(self.previous, "Can't use 'super' outside of a class.", &mut self.had_error, &mut self.panic_mode);
-        } else if !unsafe{&*self.class_compiler}.has_superclass {
-            error(self.previous, "Can't use 'super' in a class with no superclass.", &mut self.had_error, &mut self.panic_mode);
+            error(
+                self.previous,
+                "Can't use 'super' outside of a class.",
+                &mut self.had_error,
+                &mut self.panic_mode,
+            );
+        } else if !unsafe { &*self.class_compiler }.has_superclass {
+            error(
+                self.previous,
+                "Can't use 'super' in a class with no superclass.",
+                &mut self.had_error,
+                &mut self.panic_mode,
+            );
         }
 
         self.consume(TokenKind::Dot, "Expect '.' after 'super'.");
@@ -574,17 +577,20 @@ impl<'a> Parser<'a> {
             self.named_variable(Token::synthetic_new("super"), false);
             self.emit_byte_pair(OpCode::SuperInvoke, name);
             self.emit_byte(arg_count);
-        }
-        else {
+        } else {
             self.named_variable(Token::synthetic_new("super"), false);
             self.emit_byte_pair(OpCode::GetSuper, name);
         }
-        
     }
 
     fn this(&mut self, _: bool) {
         if self.class_compiler.is_null() {
-            error(self.previous, "Can't use 'this' outside of a class.", &mut self.had_error, &mut self.panic_mode);
+            error(
+                self.previous,
+                "Can't use 'this' outside of a class.",
+                &mut self.had_error,
+                &mut self.panic_mode,
+            );
             return;
         }
         self.variable(false);
@@ -663,8 +669,7 @@ impl<'a> Parser<'a> {
             let arg_count = self.argument_list();
             self.emit_byte_pair(OpCode::Invoke, name);
             self.emit_byte(arg_count);
-        }
-        else {
+        } else {
             self.emit_byte_pair(OpCode::GetProperty, name);
         }
     }
@@ -705,14 +710,12 @@ impl<'a> Parser<'a> {
     }
 
     fn identifier_constant(&mut self, name: Token) -> u8 {
-        let str_obj = Object::new_string(name.as_str(), self.vm, Some(&mut self.compiler));
-        return self
-            .current_chunk()
-            .add_constant(Value::Obj(str_obj as *mut Object)) as u8;
+        let str_obj = ObjString::new(name.as_str().to_string());
+        return self.current_chunk().borrow_mut().add_constant(Value::String(str_obj)) as u8;
     }
 
     fn add_local(&mut self, name: &'a str) {
-        if  self.compiler.local_count == (u8::MAX as usize) + 1 {
+        if self.compiler.local_count == (u8::MAX as usize) + 1 {
             error(
                 self.previous,
                 "Too many local variables in function.",
@@ -814,7 +817,12 @@ impl<'a> Parser<'a> {
             self.emit_return();
         } else {
             if self.compiler.function_type == FunctionType::Initializer {
-                error(self.previous, "Can't return a value from an initializer.", &mut self.had_error, &mut self.panic_mode);
+                error(
+                    self.previous,
+                    "Can't return a value from an initializer.",
+                    &mut self.had_error,
+                    &mut self.panic_mode,
+                );
             }
             self.expression();
             self.consume(TokenKind::Semicolon, "Expect ';' after return value.");
@@ -823,7 +831,7 @@ impl<'a> Parser<'a> {
     }
 
     fn while_statement(&mut self) {
-        let loop_start = self.current_chunk().code.len();
+        let loop_start = self.current_chunk().borrow().code.len();
         self.consume(TokenKind::LeftParen, "Expect '(' after 'while'.");
         self.expression();
         self.consume(TokenKind::RightParen, "Expect ')' after condition.");
@@ -851,7 +859,7 @@ impl<'a> Parser<'a> {
             self.expression_statement();
         }
 
-        let mut loop_start = self.current_chunk().code.len();
+        let mut loop_start = self.current_chunk().borrow().code.len();
         let exit_jump = if !self.match_token(TokenKind::Semicolon) {
             self.expression();
             self.consume(TokenKind::Semicolon, "Expect ';' after loop condition.");
@@ -862,7 +870,7 @@ impl<'a> Parser<'a> {
         };
         if !self.match_token(TokenKind::RightParen) {
             let body_jump = self.emit_jump(OpCode::Jump);
-            let increment_start = self.current_chunk().code.len();
+            let increment_start = self.current_chunk().borrow().code.len();
             self.expression();
             self.emit_byte(OpCode::Pop);
             self.consume(TokenKind::RightParen, "Expect ')' after for clauses.");
@@ -912,21 +920,28 @@ impl<'a> Parser<'a> {
     }
 
     fn function(&mut self, function_type: FunctionType) {
-        let compiler = Compiler::new(self.vm, Some(self.previous), function_type, Some(&mut self.compiler));
+        let compiler = Compiler::new(
+            self.vm,
+            Some(self.previous),
+            function_type,
+            Some(&mut self.compiler),
+        );
         let mut old_compiler = std::mem::replace(&mut self.compiler, compiler);
         self.compiler.enclosing = &mut old_compiler as *mut _;
         self.begin_scope();
         self.consume(TokenKind::LeftParen, "Expect '(' after function name.");
         'parameters: while !self.check(TokenKind::RightParen) {
-            let arity = &mut unsafe { &mut *self.compiler.function }.arity;
-            *arity += 1;
-            if *arity > 255 {
-                error(
-                    self.current,
-                    "Can't have more than 255 parameters.",
-                    &mut self.had_error,
-                    &mut self.panic_mode,
-                );
+            {
+                let arity = &mut self.compiler.function.borrow_mut().arity;
+                *arity += 1;
+                if *arity > 255 {
+                    error(
+                        self.current,
+                        "Can't have more than 255 parameters.",
+                        &mut self.had_error,
+                        &mut self.panic_mode,
+                    );
+                }
             }
             let constant = self.parse_variable("Expect parameter name.");
             self.define_variable(constant);
@@ -941,10 +956,10 @@ impl<'a> Parser<'a> {
         let function = self.end();
         let compiler = std::mem::replace(&mut self.compiler, old_compiler);
 
-        let f = self.make_constant(Value::Obj(function as *mut Object));
+        let f = self.make_constant(Value::Function(function.clone()));
         self.emit_byte_pair(OpCode::Closure, f);
 
-        for i in 0..unsafe { &*function }.upvalue_count {
+        for i in 0..function.borrow().upvalue_count {
             self.emit_byte(if compiler.upvalues[i].is_local { 1 } else { 0 });
             self.emit_byte(compiler.upvalues[i].index);
         }
@@ -971,8 +986,12 @@ impl<'a> Parser<'a> {
         self.emit_byte_pair(OpCode::Class, name_constant);
         self.define_variable(name_constant);
 
-        let mut class_compiler = ClassCompiler {enclosing: std::ptr::null_mut(), has_superclass: false};
-        let old_class_compiler = std::mem::replace(&mut self.class_compiler, &mut class_compiler as *mut _);
+        let mut class_compiler = ClassCompiler {
+            enclosing: std::ptr::null_mut(),
+            has_superclass: false,
+        };
+        let old_class_compiler =
+            std::mem::replace(&mut self.class_compiler, &mut class_compiler as *mut _);
         unsafe {
             (*self.class_compiler).enclosing = old_class_compiler;
         }
@@ -982,7 +1001,12 @@ impl<'a> Parser<'a> {
             self.variable(false);
 
             if class_name.as_str() == self.previous.as_str() {
-                error(self.previous, "A class can't inherit from itself.", &mut self.had_error, &mut self.panic_mode);
+                error(
+                    self.previous,
+                    "A class can't inherit from itself.",
+                    &mut self.had_error,
+                    &mut self.panic_mode,
+                );
             }
 
             self.begin_scope();
@@ -1003,7 +1027,7 @@ impl<'a> Parser<'a> {
         }
         self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
         self.emit_byte(OpCode::Pop);
-        if unsafe{&*self.class_compiler}.has_superclass {
+        if unsafe { &*self.class_compiler }.has_superclass {
             self.end_scope();
         }
         let _class_compiler = std::mem::replace(&mut self.class_compiler, old_class_compiler);
@@ -1077,8 +1101,7 @@ impl<'a> Parser<'a> {
     fn declaration(&mut self) {
         if self.match_token(TokenKind::Class) {
             self.class_declaration();
-        }
-        else if self.match_token(TokenKind::Var) {
+        } else if self.match_token(TokenKind::Var) {
             self.var_declaration();
         } else if self.match_token(TokenKind::Fun) {
             self.fun_declaration();
@@ -1093,16 +1116,15 @@ impl<'a> Parser<'a> {
     fn emit_return(&mut self) {
         if self.compiler.function_type == FunctionType::Initializer {
             self.emit_byte_pair(OpCode::GetLocal, 0);
-        }
-        else {
+        } else {
             self.emit_byte(OpCode::Nil);
         }
         self.emit_byte(OpCode::Return);
     }
 
-    fn end(&mut self) -> *mut ObjFunction {
+    fn end(&mut self) -> Gc<ObjFunction> {
         self.emit_return();
-        self.compiler.function
+        self.compiler.function.clone()
     }
 
     fn begin_scope(&mut self) {
@@ -1126,7 +1148,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn compile<'a>(source: &str, vm: &'a mut VM) -> Result<*mut ObjFunction, InterpretError> {
+pub fn compile<'a>(source: &str, vm: &'a mut VM) -> Result<Gc<ObjFunction>, InterpretError> {
     let mut parser = Parser::new(source, vm);
     parser.advance();
     while !parser.scanner.is_at_end() {
@@ -1135,7 +1157,7 @@ pub fn compile<'a>(source: &str, vm: &'a mut VM) -> Result<*mut ObjFunction, Int
     let function = parser.end();
     match parser.had_error {
         false => {
-            parser.current_chunk().disassemble();
+            parser.current_chunk().borrow().disassemble();
             Ok(function)
         }
         true => Err(InterpretError::Compile),

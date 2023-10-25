@@ -1,15 +1,24 @@
 use crate::compiler::Compiler;
+use crate::gc::{Gc, Trace, GcCellRef};
 use crate::vm::InterpretError;
 use crate::vm::VM;
-use crate::object::{Object, ObjectType, ObjString};
+use crate::object::*;
+use std::cell::Ref;
 use std::fmt::{Display, Error, Formatter};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Value {
     Nil,
     Bool(bool),
     Number(f64),
-    Obj(*mut Object),
+    String(Gc<ObjString>),
+    Upvalue(Gc<ObjUpvalue>),
+    Function(Gc<ObjFunction>),
+    Closure(Gc<ObjClosure>),
+    Class(Gc<ObjClass>),
+    Instance(Gc<ObjInstance>),
+    BoundMethod(Gc<ObjBoundMethod>),
+    Native(Gc<ObjNative>),
 }
 
 impl Display for Value {
@@ -18,7 +27,14 @@ impl Display for Value {
             Self::Nil => write!(f, "nil"),
             Self::Bool(b) => write!(f, "{}", b),
             Self::Number(num) => write!(f, "{}", num),
-            Self::Obj(object) =>  write!(f, "{}", Object::to_string(*object))
+            Self::String(string) => string.fmt(f),
+            Self::Upvalue(upvalue) => upvalue.fmt(f),
+            Self::Function(function) => function.fmt(f),
+            Self::Closure(closure) => closure.fmt(f),
+            Self::Class(class) => class.fmt(f),
+            Self::Instance(instance) => instance.fmt(f),
+            Self::BoundMethod(bound_method) => bound_method.fmt(f),
+            Self::Native(native) => native.fmt(f),
         }
     }
 }
@@ -47,26 +63,15 @@ impl Value {
 
     pub fn is_string(&self) -> bool {
         match self {
-            Self::Obj(obj) => {
-                if obj.is_null() {return false;}
-                match unsafe {(**obj).object_type} {
-                    ObjectType::String => true,
-                    _ => false
-                }
-            },
+            Self::String(_) => true,
             _ => false
         }
     }
 
-    pub fn as_str(&self) -> Result<&str, InterpretError> {
+    pub fn as_str(&self) -> Option<String> {
         match self {
-            Value::Obj(obj) => match unsafe{(**obj).object_type} {
-                ObjectType::String => {
-                    Ok(unsafe{(*(*obj as *mut ObjString)).as_str()})
-                },
-                _ => Err(InterpretError::Runtime),
-            }
-            _ => Err(InterpretError::Runtime)
+            Value::String(string) => Some(string.borrow().as_str().to_string()),
+            _ => None
         }
     }
 
@@ -93,17 +98,60 @@ impl Value {
     }
 }
 
-fn create_string_value<'a>(source: &'a str, vm: &mut VM, compiler: Option<&mut Compiler>) -> Value {
-    let ptr_obj = Object::new_string(source, vm, compiler);
-    Value::Obj(ptr_obj as *mut Object)
+unsafe impl Trace for Value {
+    fn trace(&self) {
+        match self {
+            Value::String(string) => string.trace(),
+            Value::Upvalue(upvalue) => upvalue.trace(),
+            Value::Function(function) => function.trace(),
+            Value::Closure(closure) => closure.trace(),
+            Value::Class(class) => class.trace(),
+            Value::Instance(instance) => instance.trace(),
+            Value::BoundMethod(bound_method) => bound_method.trace(),
+            Value::Native(native) => native.trace(),
+            _ => ()
+        }
+    }
+
+    fn root(&self) {
+        match self {
+            Value::String(string) => string.root(),
+            Value::Upvalue(upvalue) => upvalue.root(),
+            Value::Function(function) => function.root(),
+            Value::Closure(closure) => closure.root(),
+            Value::Class(class) => class.root(),
+            Value::Instance(instance) => instance.root(),
+            Value::BoundMethod(bound_method) => bound_method.root(),
+            Value::Native(native) => native.root(),
+            _ => ()
+        }
+    }
+
+    fn unroot(&self) {
+        match self {
+            Value::String(string) => string.unroot(),
+            Value::Upvalue(upvalue) => upvalue.unroot(),
+            Value::Function(function) => function.unroot(),
+            Value::Closure(closure) => closure.unroot(),
+            Value::Class(class) => class.unroot(),
+            Value::Instance(instance) => instance.unroot(),
+            Value::BoundMethod(bound_method) => bound_method.unroot(),
+            Value::Native(native) => native.unroot(),
+            _ => ()
+        }
+    }
+}
+
+fn create_string_value<'a>(source: String, vm: &mut VM, compiler: Option<&mut Compiler>) -> Value {
+    Value::String(ObjString::new(source))
 }
 
 pub fn copy_string<'a>(source: &str, vm: &mut VM, compiler: Option<&mut Compiler>) -> Value {
-    create_string_value(source, vm, compiler)
+    create_string_value(source.to_string(), vm, compiler)
 }
 
-pub fn concatenate_strings(a: &str, b: &str, vm: &mut VM, compiler: Option<&mut Compiler>) -> Value {
+pub fn concatenate_strings(a: String, b: String, vm: &mut VM, compiler: Option<&mut Compiler>) -> Value {
     let mut string = a.to_string(); //need to create this allocation because HashSet's get_or_insert() method is currently unstable
-    string.push_str(b);
-    create_string_value(string.as_ref(), vm, compiler)
+    string.push_str(&b);
+    create_string_value(string, vm, compiler)
 }

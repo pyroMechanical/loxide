@@ -1,9 +1,9 @@
-use crate::{object::ObjFunction, value::Value};
+use crate::{object::{ObjFunction}, value::Value, gc::Trace};
 
 pub mod operations;
 pub use operations::OpCode;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Chunk {
     pub code: Vec<u8>,
     lines: Vec<u32>,
@@ -96,18 +96,18 @@ impl Chunk {
                         "{:04} {} {:?} {} {}",
                         index, line, operation, constant, self.constants[constant as usize]
                     );
-                    let function = self.constants[constant as usize];
-                    if let Value::Obj(function) = function {
-                        let function = unsafe { &*(function as *mut ObjFunction) };
-                        for _ in 0..function.upvalue_count {
-                            offset += 1;
+                    let function = self.constants[constant as usize].clone();
+                    if let Value::Function(function) = function {
+                        for _ in 0..function.borrow().upvalue_count {
+                            
                             let is_local = self.code[offset];
                             offset += 1;
                             let index = self.code[offset];
+                            offset += 1;
                             println!(
                                 "{:04}    | {} {}",
                                 offset,
-                                if is_local != 0 { "local" } else { "upvale" },
+                                if is_local != 0 { "local" } else { "upvalue" },
                                 index
                             );
                         }
@@ -129,5 +129,17 @@ impl Chunk {
         while index.is_some() {
             index = self.disassemble_instruction(index.unwrap());
         }
+    }
+}
+
+unsafe impl Trace for Chunk {
+    fn trace(&self) {
+        self.constants.trace();
+    }
+    fn root(&self) {
+        self.constants.root();
+    }
+    fn unroot(&self) {
+        self.constants.unroot();
     }
 }

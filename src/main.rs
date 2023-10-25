@@ -1,20 +1,13 @@
-mod allocate;
 mod chunk;
 mod compiler;
+mod gc;
 mod object;
 mod scanner;
 mod value;
 mod vm;
 
 use vm::*;
-
-#[test]
-fn test_vm()
-{
-    let mut vm = VM::new();
-    let _ = vm.interpret(
-    r#"
-    class Doughnut {
+/*class Doughnut {
         cook() {
           print "Dunk in the fryer.";
           this.finish("sprinkles");
@@ -32,8 +25,28 @@ fn test_vm()
         }
       }
     var cruller = Cruller();
-    cruller.cook();
+    cruller.cook(); */
+#[test]
+fn test_vm()
+{
+    let mut vm = VM::new();
+    let _ = vm.interpret(
+    r#"
+    class Foo {
+      getClosure() {
+        fun closure() {
+          return this.toString();
+        }
+        return closure;
+      }
+      toString() {
+        return "Foo";
+      }
+    }
+    var closure = Foo().getClosure();
+    print closure();
     "#.to_string());
+    println!("gc allocations: {}", crate::gc::allocations())
 }
 
 fn repl(vm: &mut VM) {
