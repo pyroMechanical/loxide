@@ -1,17 +1,14 @@
 use crate::chunk::{Chunk, OpCode};
 use crate::gc::Gc;
 use crate::object::{
-    ObjBoundMethod, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjNative, ObjString,
-    ObjUpvalue,
+    ObjBoundMethod, ObjClass, ObjClosure, ObjInstance, ObjNative, ObjString, ObjUpvalue, ObjectType,
 };
-use crate::value::{copy_string, Value};
+use crate::value::Value;
 use once_cell::sync::Lazy;
 
-use std::cell::Ref;
 use std::collections::HashMap;
 
 const STACK_MAX: usize = 256;
-const FRAMES_MAX: usize = 64;
 
 pub static START_TIME: Lazy<std::time::Instant> = Lazy::new(|| std::time::Instant::now());
 
@@ -48,10 +45,6 @@ impl CallFrame {
             stack_offset,
         }
     }
-
-    pub fn closure(&self) -> Gc<ObjClosure> {
-        self.closure.clone()
-    }
 }
 
 fn clock_native(_: *mut [Value]) -> Value {
@@ -63,10 +56,7 @@ pub struct VM {
     frame_count: usize,
     stack: [Value; STACK_MAX],
     stack_index: usize,
-    strings: HashMap<Box<str>, Gc<ObjString>>,
     globals: HashMap<Gc<ObjString>, Value>,
-    pub(crate) bytes_allocated: usize,
-    pub(crate) next_gc: usize,
     pub init_string: Gc<ObjString>,
     pub open_upvalues: Option<Gc<ObjUpvalue>>,
 }
@@ -78,10 +68,7 @@ impl VM {
             frame_count: 0,
             stack: std::array::from_fn(|_| Value::Number(0.0).clone()),
             stack_index: 0,
-            strings: HashMap::new(),
             globals: HashMap::new(),
-            bytes_allocated: 0,
-            next_gc: 1024 * 1024,
             init_string: ObjString::new("init".to_string()),
             open_upvalues: None,
         };
@@ -90,19 +77,17 @@ impl VM {
     }
 
     pub fn current_chunk(&self) -> Gc<Chunk> {
-        self.current_frame().closure.borrow().function.borrow().chunk.clone()
-    }
-
-    pub fn globals(&self) -> &HashMap<Gc<ObjString>, Value> {
-        &self.globals
+        self.current_frame()
+            .closure
+            .borrow()
+            .function
+            .borrow()
+            .chunk
+            .clone()
     }
 
     pub fn reset_stack(&mut self) {
         self.stack_index = 0;
-    }
-
-    pub fn strings(&mut self) -> &mut HashMap<Box<str>, Gc<ObjString>> {
-        &mut self.strings
     }
     pub fn current_frame(&self) -> &CallFrame {
         self.frames.last().unwrap()
@@ -112,21 +97,16 @@ impl VM {
         self.frames.last_mut().unwrap()
     }
 
-    pub fn stack(&self) -> &[Value] {
-        self.stack.split_at(self.stack_index).0
-    }
-
-    pub fn frames(&self) -> &[CallFrame] {
-        self.frames.split_at(self.frame_count).0
-    }
-
     fn runtime_error(&mut self, msg: String) -> Result<(), InterpretError> {
         eprintln!("{}", msg);
         for i in (0..self.frame_count).rev() {
             let frame = &self.frames[i];
             let closure = frame.closure.borrow();
             let function = closure.function.borrow();
-            eprint!("[line {}] in ", function.chunk.borrow().get_line(frame.ip - 1));
+            eprint!(
+                "[line {}] in ",
+                function.chunk.borrow().get_line(frame.ip - 1)
+            );
             match &function.name {
                 None => eprintln!("script"),
                 Some(string) => eprintln!("{}", string.borrow().as_str()),
@@ -138,7 +118,7 @@ impl VM {
 
     fn define_native(&mut self, name: &str, function: fn(*mut [Value]) -> Value) {
         let name = ObjString::new(name.to_string());
-        let native = Value::Native(ObjNative::new(function));
+        let native = Value::Object(ObjNative::new(function).into());
         self.globals.insert(name, native);
     }
 
@@ -173,29 +153,35 @@ impl VM {
     }
 
     pub fn call_value(&mut self, callee: Value, arg_count: usize) -> Result<(), InterpretError> {
-        match callee {
-            Value::BoundMethod(bound_method) => {
-                self.stack[self.stack_index - arg_count - 1] = bound_method.borrow().receiver.clone();
-                return self.call(bound_method.borrow().method.clone(), arg_count);
-            }
-            Value::Class(class) => {
-                self.stack[self.stack_index - arg_count - 1] =
-                    Value::Instance(ObjInstance::new(class.clone()));
-                if let Some(closure) = class.borrow().methods.get(&self.init_string) {
-                    return self.call(closure.clone(), arg_count);
-                } else if arg_count != 0 {
-                    return self
-                        .runtime_error(format!("Expected 0 arguments but got {}.", arg_count));
-                };
-                Ok(())
-            }
-            Value::Closure(closure) => return self.call(closure, arg_count),
-            Value::Native(native) => {
-                let native = native.borrow().function;
-                let result = native(self.get_value_slice(arg_count)?);
-                self.stack_index -= arg_count + 1;
-                self.push(result)
-            }
+        match &callee {
+            Value::Object(object) => match object.borrow().obj_type() {
+                ObjectType::BoundMethod => {
+                    let bound_method = callee.as_bound_method().unwrap();
+                    self.stack[self.stack_index - arg_count - 1] =
+                        bound_method.borrow().receiver.clone();
+                    return self.call(bound_method.borrow().method.clone(), arg_count);
+                }
+                ObjectType::Class => {
+                    let class = callee.as_class().unwrap();
+                    self.stack[self.stack_index - arg_count - 1] =
+                        Value::Object(ObjInstance::new(class.clone()).into());
+                    if let Some(closure) = class.borrow().methods.get(&self.init_string) {
+                        return self.call(closure.clone(), arg_count);
+                    } else if arg_count != 0 {
+                        return self
+                            .runtime_error(format!("Expected 0 arguments but got {}.", arg_count));
+                    };
+                    Ok(())
+                }
+                ObjectType::Closure => return self.call(callee.as_closure().unwrap(), arg_count),
+                ObjectType::Native => {
+                    let native = callee.as_native().unwrap().borrow().function;
+                    let result = native(self.get_value_slice(arg_count)?);
+                    self.stack_index -= arg_count + 1;
+                    self.push(result)
+                }
+                _ => return self.runtime_error("Can only call functions and classes.".to_string()),
+            },
             _ => return self.runtime_error("Can only call functions and classes.".to_string()),
         }
     }
@@ -214,7 +200,7 @@ impl VM {
 
     fn invoke(&mut self, name: Gc<ObjString>, arg_count: usize) -> Result<(), InterpretError> {
         let receiver = self.peek(arg_count)?.clone();
-        if let Value::Instance(instance) = receiver {
+        if let Ok(instance) = receiver.as_instance() {
             if let Some(value) = instance.borrow().fields.get(&name) {
                 self.stack[self.stack_index - arg_count - 1] = value.clone();
                 return self.call_value(value.clone(), arg_count);
@@ -238,7 +224,7 @@ impl VM {
                 let receiver = self.peek(0)?.clone();
                 let bound_method = ObjBoundMethod::new(receiver, method.clone());
                 self.pop()?;
-                self.push(Value::BoundMethod(bound_method))
+                self.push(Value::Object(bound_method.into()))
             }
             None => self.runtime_error(format!("Undefined property {}", name)),
         }
@@ -285,8 +271,8 @@ impl VM {
     fn define_method(&mut self, name: Gc<ObjString>) -> Result<(), InterpretError> {
         let method = self.peek(0)?.clone();
         let class = self.peek(1)?.clone();
-        if let Value::Class(class) = class {
-            if let Value::Closure(method) = method {
+        if let Ok(class) = class.as_class() {
+            if let Ok(method) = method.as_closure() {
                 class.borrow_mut().methods.insert(name, method);
             } else {
                 self.runtime_error(format!(
@@ -319,28 +305,42 @@ impl VM {
     fn concatenate_strings(&mut self) -> Result<(), InterpretError> {
         let b = self.peek(0)?.clone();
         let a = self.peek(1)?.clone();
-        let b = b.as_str();
-        let a = a.as_str();
+        let b = b.to_string();
+        let a = a.to_string();
         if a.is_none() || b.is_none() {
             self.runtime_error("Operands must be two numbers or two strings.".to_string())?;
         }
 
-        let new_value = crate::value::concatenate_strings(a.unwrap(), b.unwrap(), self, None);
+        let new_value = crate::value::concatenate_strings(a.unwrap(), b.unwrap());
         self.pop()?;
         self.pop()?;
         self.push(new_value)
     }
 
     fn read_operation(&mut self) -> Option<OpCode> {
-        let result = self.current_chunk().borrow().read_operation(self.current_frame().ip);
+        let result = self
+            .current_chunk()
+            .borrow()
+            .read_operation(self.current_frame().ip);
         self.current_frame_mut().ip += 1;
         result
     }
 
     fn read_byte(&mut self) -> u8 {
-        let result = self.current_chunk().borrow().read_byte(self.current_frame().ip);
+        let result = self
+            .current_chunk()
+            .borrow()
+            .read_byte(self.current_frame().ip);
         self.current_frame_mut().ip += 1;
         result
+    }
+
+    fn read_string(&mut self) -> Gc<ObjString> {
+        let index = self.read_byte();
+        self.current_chunk().borrow().constants[index as usize]
+            .clone()
+            .as_string()
+            .unwrap()
     }
 
     fn read_u16(&mut self) -> u16 {
@@ -376,44 +376,27 @@ impl VM {
                     }
                     OpCode::Invoke => {
                         let global = self.read_byte();
-                        if let Value::String(string) =
-                            self.current_chunk().borrow().constants[global as usize].clone()
-                        {
-                            let arg_count = self.read_byte() as usize;
-                            self.invoke(string, arg_count)?;
-                        } else {
-                            self.runtime_error(format!(
-                                "Provided global name was not a string! this is a compiler error."
-                            ))?;
-                        }
+                        let string = self.current_chunk().borrow().constants[global as usize]
+                            .clone()
+                            .as_string()
+                            .unwrap();
+                        let arg_count = self.read_byte() as usize;
+                        self.invoke(string, arg_count)?;
                     }
                     OpCode::SuperInvoke => {
-                        let global = self.read_byte();
-                        if let Value::String(name) = self.current_chunk().borrow().constants[global as usize].clone()
-                        {
-                            let superclass = self.pop()?;
-                            if let Value::Class(superclass) = superclass {
-                                let arg_count = self.read_byte() as usize;
-                                self.invoke_from_class(superclass, name, arg_count)?;
-                            } else {
-                                self.runtime_error(format!(
-                                    "Provided super was not a class! this is a compiler error."
-                                ))?;
-                            }
-                        } else {
-                            self.runtime_error(format!(
-                                "Provided global name was not a string! this is a compiler error."
-                            ))?;
-                        }
+                        let name = self.read_string();
+                        let superclass = self.pop()?.as_class().unwrap();
+                        let arg_count = self.read_byte() as usize;
+                        self.invoke_from_class(superclass, name, arg_count)?;
                     }
                     OpCode::Closure => {
                         let index = self.read_byte();
-                        if let Value::Function(function) =
-                            self.current_chunk().borrow().constants[index as usize].clone()
+                        if let Ok(function) =
+                            self.current_chunk().borrow().constants[index as usize].clone().as_function()
                         {
                             let closure = ObjClosure::new(function.clone());
-                            self.push(Value::Closure(closure.clone()))?;
-                            for i in 0..function.borrow().upvalue_count {
+                            self.push(Value::Object(closure.clone().into()))?;
+                            for _i in 0..function.borrow().upvalue_count {
                                 let is_local = self.read_byte();
                                 let index = self.read_byte();
                                 if is_local != 0 {
@@ -424,7 +407,8 @@ impl VM {
                                     closure.borrow_mut().upvalues.push(upvalue);
                                 } else {
                                     let parent_closure = self.current_frame().closure.clone();
-                                    let upvalue = parent_closure.borrow().upvalues[index as usize].clone();
+                                    let upvalue =
+                                        parent_closure.borrow().upvalues[index as usize].clone();
                                     closure.borrow_mut().upvalues.push(upvalue);
                                 }
                             }
@@ -435,43 +419,23 @@ impl VM {
                         }
                     }
                     OpCode::Class => {
-                        let global = self.read_byte();
-                        if let Value::String(name) = self.current_chunk().borrow().constants[global as usize].clone()
-                        {
-                            let class = Value::Class(ObjClass::new(name));
-                            self.push(class)?;
-                        } else {
-                            self.runtime_error(format!(
-                                "Provided global name was not a string! this is a compiler error."
-                            ))?;
-                        }
+                        let name = self.read_string();
+                        let class = Value::Object(ObjClass::new(name).into());
+                        self.push(class)?;
                     }
                     OpCode::Inherit => {
-                        if let (Value::Class(superclass), Value::Class(subclass)) =
-                            (self.peek(1)?.clone(), self.peek(0)?.clone())
-                        {
-                            let subclass_methods = &mut subclass.borrow_mut().methods;
+                        let superclass = self.peek(1)?.clone().as_class().unwrap();
+                        let subclass = self.peek(0)?.clone().as_class().unwrap();
+                        let subclass_methods = &mut subclass.borrow_mut().methods;
 
-                            for (name, method) in &superclass.borrow().methods {
-                                subclass_methods.insert(name.clone(), method.clone());
-                            }
-                            self.pop()?;
-                        } else {
-                            self.runtime_error(format!(
-                                "Provided value was not a class! this is a compiler error."
-                            ))?;
+                        for (name, method) in &superclass.borrow().methods {
+                            subclass_methods.insert(name.clone(), method.clone());
                         }
+                        self.pop()?;
                     }
                     OpCode::Method => {
-                        let global = self.read_byte();
-                        if let Value::String(name) = self.current_chunk().borrow().constants[global as usize].clone()
-                        {
-                            self.define_method(name)?;
-                        } else {
-                            self.runtime_error(format!(
-                                "Provided global name was not a string! this is a compiler error."
-                            ))?;
-                        }
+                        let name = self.read_string();
+                        self.define_method(name)?;
                     }
                     OpCode::CloseUpvalue => {
                         let last = &mut self.stack[self.stack_index - 1] as *mut _;
@@ -506,48 +470,29 @@ impl VM {
                         self.stack[slot as usize + offset] = self.peek(0)?.clone();
                     }
                     OpCode::GetGlobal => {
-                        let global = self.read_byte();
-                        if let Value::String(name) = self.current_chunk().borrow().constants[global as usize].clone()
-                        {
-                            match self.globals.get(&name) {
-                                None => {
-                                    self.runtime_error(format!("Undefined variable {}", name))?;
-                                }
-                                Some(value) => self.push(value.clone())?,
-                            };
-                        } else {
-                            self.runtime_error(format!(
-                                "Provided global name was not a string! this is a compiler error."
-                            ))?;
-                        }
+                        let name = self.read_string();
+                        match self.globals.get(&name) {
+                            None => {
+                                self.runtime_error(format!("Undefined variable {}", name))?;
+                            }
+                            Some(value) => self.push(value.clone())?,
+                        };
                     }
                     OpCode::DefineGlobal => {
-                        let global = self.read_byte();
-                        if let Value::String(name) = self.current_chunk().borrow().constants[global as usize].clone()
-                        {
-                            let value = self.peek(0)?.clone();
-                            self.globals.insert(name, value);
-                            self.pop()?;
-                        } else {
-                            self.runtime_error(format!(
-                                "Provided global name was not a string! this is a compiler error."
-                            ))?;
-                        }
+                        let name = self.read_string();
+                        let value = self.peek(0)?.clone();
+                        self.globals.insert(name, value);
+                        self.pop()?;
                     }
                     OpCode::SetGlobal => {
-                        let global = self.read_byte();
-                        if let Value::String(name) = self.current_chunk().borrow().constants[global as usize].clone()
-                        {
-                            let value = self.peek(0)?.clone();
-                            match self.globals.entry(name.clone()) {
-                                std::collections::hash_map::Entry::Occupied(mut occupied) => {
-                                    *occupied.get_mut() = value;
-                                }
-                                std::collections::hash_map::Entry::Vacant(_) => {
-                                    self.runtime_error(format!(
-                                        "Undefined variable '{}'", name
-                                    ))?;
-                                }
+                        let name = self.read_string();
+                        let value = self.peek(0)?.clone();
+                        match self.globals.entry(name.clone()) {
+                            std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                                *occupied.get_mut() = value;
+                            }
+                            std::collections::hash_map::Entry::Vacant(_) => {
+                                self.runtime_error(format!("Undefined variable '{}'", name))?;
                             }
                         }
                     }
@@ -568,7 +513,8 @@ impl VM {
                     }
                     OpCode::GetUpvalue => {
                         let slot = self.read_byte();
-                        let slot = self.current_frame().closure.borrow().upvalues[slot as usize].clone();
+                        let slot =
+                            self.current_frame().closure.borrow().upvalues[slot as usize].clone();
                         let upvalue = if slot.borrow().location.is_null() {
                             slot.borrow().closed.clone()
                         } else {
@@ -579,7 +525,8 @@ impl VM {
                     OpCode::SetUpvalue => {
                         let slot = self.read_byte();
                         let value = self.peek(0)?.clone();
-                        let upvalue = self.current_frame().closure.borrow().upvalues[slot as usize].clone();
+                        let upvalue =
+                            self.current_frame().closure.borrow().upvalues[slot as usize].clone();
                         if upvalue.borrow().location.is_null() {
                             upvalue.borrow_mut().closed = value;
                         } else {
@@ -588,11 +535,11 @@ impl VM {
                         }
                     }
                     OpCode::GetProperty => {
-                        let instance = self.peek(0)?.clone();
-                        if let Value::Instance(instance) = instance {
+                        let instance = self.peek(0)?.clone().as_instance();
+                        if let Ok(instance) = instance {
                             let name = self.read_byte();
-                            if let Value::String(name) =
-                                self.current_chunk().borrow().constants[name as usize].clone()
+                            if let Ok(name) =
+                                self.current_chunk().borrow().constants[name as usize].clone().as_string()
                             {
                                 match instance.borrow().fields.get(&name) {
                                     Some(value) => {
@@ -610,11 +557,11 @@ impl VM {
                         }
                     }
                     OpCode::SetProperty => {
-                        let instance = self.peek(1)?;
-                        if let Value::Instance(instance) = instance.clone() {
+                        let instance = self.peek(1)?.clone().as_instance();
+                        if let Ok(instance) = instance {
                             let name = self.read_byte();
-                            if let Value::String(name) =
-                                self.current_chunk().borrow().constants[name as usize].clone()
+                            if let Ok(name) =
+                                self.current_chunk().borrow().constants[name as usize].clone().as_string()
                             {
                                 instance
                                     .borrow_mut()
@@ -627,17 +574,13 @@ impl VM {
                         }
                     }
                     OpCode::GetSuper => {
-                        let name = self.read_byte();
-                        if let Value::String(name) = self.current_chunk().borrow().constants[name as usize].clone() {
-                            let superclass = self.pop()?;
-                            if let Value::Class(superclass) = superclass {
-                                self.bind_method(superclass, name)?;
-                            } else {
-                                todo!();
-                            }
-                        } else {
-                            todo!();
-                        }
+                        let constant = self.read_byte();
+                        let name = self.current_chunk().borrow().constants[constant as usize]
+                            .clone()
+                            .as_string()
+                            .unwrap();
+                        let superclass = self.pop()?.as_class().unwrap();
+                        self.bind_method(superclass, name)?;
                     }
                     OpCode::Equal => {
                         let b = self.pop()?;
@@ -674,11 +617,11 @@ impl VM {
     }
 
     pub fn interpret(&mut self, source: String) -> Result<(), InterpretError> {
-        let function = crate::compiler::compile(source.as_str(), self)?;
-        self.push(Value::Function(function.clone()))?;
+        let function = crate::compiler::compile(source.as_str())?;
+        self.push(Value::Object(function.clone().into()))?;
         let closure = ObjClosure::new(function);
         self.pop()?;
-        self.push(Value::Closure(closure.clone()))?;
+        self.push(Value::Object(closure.clone().into()))?;
         self.call(closure, 0)?;
         self.run()
     }

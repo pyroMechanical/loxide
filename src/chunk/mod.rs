@@ -1,4 +1,4 @@
-use crate::{object::{ObjFunction}, value::Value, gc::Trace};
+use crate::{value::Value, gc::Trace, object::Object};
 
 pub mod operations;
 pub use operations::OpCode;
@@ -20,8 +20,6 @@ impl Chunk {
     }
 
     pub fn get_line(&self, ip: usize) -> u32 {
-        //since instruction pointer is at next instruction,
-        //we need to subtract 1 to find the current instruction.
         self.lines[ip - 1]
     }
 
@@ -96,8 +94,7 @@ impl Chunk {
                         "{:04} {} {:?} {} {}",
                         index, line, operation, constant, self.constants[constant as usize]
                     );
-                    let function = self.constants[constant as usize].clone();
-                    if let Value::Function(function) = function {
+                    if let Ok(function) = self.constants[constant as usize].clone().as_function() {
                         for _ in 0..function.borrow().upvalue_count {
                             
                             let is_local = self.code[offset];

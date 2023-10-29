@@ -5,7 +5,7 @@ use crate::{
     scanner::{Scanner, Token, TokenKind},
     value::copy_string,
     value::Value,
-    vm::{InterpretError, VM},
+    vm::InterpretError,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -219,7 +219,6 @@ pub struct Compiler<'a> {
 
 impl<'a> Compiler<'a> {
     fn new(
-        vm: &mut VM,
         name: Option<Token<'a>>,
         function_type: FunctionType,
         mut existing: Option<&mut Compiler<'a>>,
@@ -340,20 +339,18 @@ pub struct Parser<'a> {
     current: Token<'a>,
     compiler: Compiler<'a>,
     class_compiler: *mut ClassCompiler,
-    vm: &'a mut VM,
     panic_mode: bool,
     had_error: bool,
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str, vm: &'a mut VM) -> Parser<'a> {
+    fn new(source: &'a str) -> Parser<'a> {
         Parser {
             scanner: Scanner::new(source),
             previous: Token::default(),
             current: Token::default(),
-            compiler: Compiler::new(vm, None, FunctionType::Script, None),
+            compiler: Compiler::new(None, FunctionType::Script, None),
             class_compiler: std::ptr::null_mut(),
-            vm,
             panic_mode: false,
             had_error: false,
         }
@@ -493,9 +490,7 @@ impl<'a> Parser<'a> {
     fn string(&mut self, _: bool) {
         let string = self.previous.as_str();
         let value = copy_string(
-            string.trim_start_matches('"').trim_end_matches('"'),
-            self.vm,
-            Some(&mut self.compiler),
+            string.trim_start_matches('"').trim_end_matches('"')
         );
         let index = self.current_chunk().borrow_mut().add_constant(value);
         self.emit_byte_pair(OpCode::Constant, index as u8);
@@ -711,7 +706,7 @@ impl<'a> Parser<'a> {
 
     fn identifier_constant(&mut self, name: Token) -> u8 {
         let str_obj = ObjString::new(name.as_str().to_string());
-        return self.current_chunk().borrow_mut().add_constant(Value::String(str_obj)) as u8;
+        return self.current_chunk().borrow_mut().add_constant(Value::Object(str_obj.into())) as u8;
     }
 
     fn add_local(&mut self, name: &'a str) {
@@ -921,7 +916,6 @@ impl<'a> Parser<'a> {
 
     fn function(&mut self, function_type: FunctionType) {
         let compiler = Compiler::new(
-            self.vm,
             Some(self.previous),
             function_type,
             Some(&mut self.compiler),
@@ -956,7 +950,7 @@ impl<'a> Parser<'a> {
         let function = self.end();
         let compiler = std::mem::replace(&mut self.compiler, old_compiler);
 
-        let f = self.make_constant(Value::Function(function.clone()));
+        let f = self.make_constant(Value::Object(function.clone().into()));
         self.emit_byte_pair(OpCode::Closure, f);
 
         for i in 0..function.borrow().upvalue_count {
@@ -1148,8 +1142,8 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn compile<'a>(source: &str, vm: &'a mut VM) -> Result<Gc<ObjFunction>, InterpretError> {
-    let mut parser = Parser::new(source, vm);
+pub fn compile<'a>(source: &str) -> Result<Gc<ObjFunction>, InterpretError> {
+    let mut parser = Parser::new(source);
     parser.advance();
     while !parser.scanner.is_at_end() {
         parser.declaration();

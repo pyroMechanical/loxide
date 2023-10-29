@@ -73,10 +73,9 @@ pub unsafe trait Trace {
 
     fn unroot(&self) {}
 }
-
+#[repr(C)]
 struct GcBox<T: ?Sized> {
     is_marked: Cell<bool>,
-    is_interned: Cell<bool>,
     roots: Cell<usize>,
     next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
     value: T,
@@ -100,7 +99,6 @@ impl<T: Trace> GcBox<T> {
     fn new(value: T) -> NonNull<GcBox<T>> {
         let boxed = Box::new(GcBox {
             is_marked: Cell::new(false),
-            is_interned: Cell::new(false),
             roots: Cell::new(1),
             next: Cell::new(None),
             value,
@@ -172,7 +170,7 @@ impl BorrowFlag {
         BorrowFlag(self.0 & !Self::ROOT | if rooted { Self::ROOT } else { 0 })
     }
 }
-
+#[repr(C)]
 struct GcCell<T> {
     flags: Cell<BorrowFlag>,
     value: UnsafeCell<T>,
@@ -301,6 +299,7 @@ impl<'a, T: Trace> Drop for GcCellRefMut<'a, T> {
     }
 }
 
+#[repr(C)]
 pub struct Gc<T: Trace + 'static> {
     ptr: Cell<NonNull<GcBox<GcCell<T>>>>,
 }
@@ -329,10 +328,6 @@ impl<T: Trace> Gc<T> {
         let result = Gc { ptr: gc_box };
         unsafe { result.set_root() };
         result
-    }
-
-    pub fn intern(&self) {
-        unsafe { &*self.inner() }.is_interned.set(true);
     }
 
     unsafe fn set_root(&self) {
