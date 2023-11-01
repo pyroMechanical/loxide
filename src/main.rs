@@ -7,46 +7,19 @@ mod value;
 mod vm;
 
 use vm::*;
-/*class Doughnut {
-        cook() {
-          print "Dunk in the fryer.";
-          this.finish("sprinkles");
-        }
-      
-        finish(ingredient) {
-          print "Finish with " + ingredient;
-        }
-      }
-      
-      class Cruller < Doughnut {
-        finish(ingredient) {
-          // No sprinkles, always icing.
-          super.finish("icing");
-        }
-      }
-    var cruller = Cruller();
-    cruller.cook(); */
+
 #[test]
 fn test_vm()
 {
     let mut vm = VM::new();
     let _ = vm.interpret(
     r#"
-    class Foo {
-      getClosure() {
-        fun closure() {
-          return this.toString();
-        }
-        return closure;
+    fun fib(index) {
+        if(index <= 1) return index;
+        return fib(index - 1) + fib(index - 2);
       }
-      toString() {
-        return "Foo";
-      }
-    }
-    var closure = Foo().getClosure();
-    print closure();
+      print fib(25);
     "#.to_string());
-    println!("gc allocations: {}", crate::gc::allocations())
 }
 
 fn repl(vm: &mut VM) {
@@ -80,7 +53,7 @@ fn run_file(vm: &mut VM, file_path: String) {
 }
 
 fn main() {
-    let _ = START_TIME.elapsed();
+    let _ = START_TIME.with(|start_time| start_time.get().elapsed());
     let mut vm = VM::new();
     let mut args = std::env::args();
     if args.len() == 1 {

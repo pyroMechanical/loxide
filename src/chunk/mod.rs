@@ -1,4 +1,4 @@
-use crate::{value::Value, gc::Trace, object::Object};
+use crate::{value::value::Value, gc::Trace};
 
 pub mod operations;
 pub use operations::OpCode;

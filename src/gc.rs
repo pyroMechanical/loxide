@@ -1,24 +1,18 @@
 use std::cell::{Cell, RefCell, UnsafeCell};
+use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
+use crate::object::ObjString;
+
 struct GcState {
     allocations: Option<NonNull<GcBox<dyn Trace>>>,
+    interned_strings: HashMap<Box<str>, Gc<ObjString>>,
 }
 
 impl GcState {
-    fn len(&self) -> usize {
-        let mut len = 0;
-        let mut next = self.allocations;
-        while let Some(allocation) = next {
-            len += 1;
-            next = unsafe{&*allocation.as_ptr()}.next.get();
-        };
-        len
-    }
-
     fn collect_garbage(&mut self) {
         //println!("-- gc begin");
         let mut current = self.allocations;
@@ -32,6 +26,10 @@ impl GcState {
                 current = gc_box.next.get();
             }
         }
+
+        self.interned_strings
+            .retain(|_, gc_string| gc_string.inner().is_marked.get());
+
         let mut previous: Option<NonNull<GcBox<dyn Trace>>> = None;
         current = self.allocations;
         while let Some(allocation) = current {
@@ -39,14 +37,14 @@ impl GcState {
                 let gc_box = allocation.as_ref();
                 let next = gc_box.next.get();
                 if !gc_box.is_marked.get() {
-                    println!("freed allocation!");
+                    //println!("freed allocation!");
                     match previous {
                         None => self.allocations = next,
                         Some(previous) => (&*previous.as_ptr()).next.set(next),
                     }
                     std::mem::drop(Box::from_raw(allocation.as_ptr()));
-                }
-                else {
+                } else {
+                    gc_box.is_marked.set(false);
                     previous = current;
                 }
                 current = next;
@@ -56,14 +54,17 @@ impl GcState {
     }
 }
 
-pub fn allocations() -> usize{
-    GC_STATE.with(|state|
-        state.borrow().len()
-    )
+pub fn get_interned_string(string: &str) -> Option<Gc<ObjString>> {
+    GC_STATE.with(|state| state.borrow().interned_strings.get(string).cloned())
+}
+
+pub fn intern_string(key: Box<str>, value: Gc<ObjString>) {
+    value.unroot();
+    GC_STATE.with(|state| state.borrow_mut().interned_strings.insert(key, value));
 }
 
 thread_local! {
-    static GC_STATE: RefCell<GcState> = RefCell::new(GcState{allocations: None});
+    static GC_STATE: RefCell<GcState> = RefCell::new(GcState{allocations: None, interned_strings: HashMap::new()});
 }
 
 pub unsafe trait Trace {
@@ -99,6 +100,7 @@ impl<T: Trace> GcBox<T> {
     fn new(value: T) -> NonNull<GcBox<T>> {
         let boxed = Box::new(GcBox {
             is_marked: Cell::new(false),
+            //is_interned: Cell::new(false),
             roots: Cell::new(1),
             next: Cell::new(None),
             value,
@@ -113,7 +115,7 @@ impl<T: ?Sized + Trace> GcBox<T> {
     }
 
     fn trace_inner(&self) {
-        if !self.is_marked.get() { 
+        if !self.is_marked.get() {
             self.is_marked.set(true);
             self.value.trace()
         }
@@ -164,10 +166,6 @@ impl BorrowFlag {
     fn sub_reading(self) -> Self {
         assert!(self.borrowed() == BorrowState::Reading);
         BorrowFlag(self.0 - 1)
-    }
-
-    fn set_rooted(self, rooted: bool) -> Self {
-        BorrowFlag(self.0 & !Self::ROOT | if rooted { Self::ROOT } else { 0 })
     }
 }
 #[repr(C)]
@@ -304,11 +302,17 @@ pub struct Gc<T: Trace + 'static> {
     ptr: Cell<NonNull<GcBox<GcCell<T>>>>,
 }
 
+union Address<T> {
+    addr: usize,
+    ptr: *mut GcBox<GcCell<T>>,
+}
+
 unsafe fn clear_root_bit<T>(ptr: NonNull<GcBox<GcCell<T>>>) -> NonNull<GcBox<GcCell<T>>> {
-    let addr = ptr.as_ptr() as isize;
-    let new_addr = addr & !1;
-    let new_ptr = new_addr as *mut GcBox<GcCell<T>>;
-    NonNull::new_unchecked(new_ptr)
+    let mut addr = Address { ptr: ptr.as_ptr() };
+    unsafe {
+        addr.addr &= !1;
+        NonNull::new_unchecked(addr.ptr)
+    }
 }
 
 impl<T: Trace> Gc<T> {
@@ -319,7 +323,7 @@ impl<T: Trace> Gc<T> {
             state.collect_garbage();
             let next = state.allocations.replace(gc_box.get());
             if let Some(next) = next {
-                unsafe{&*state.allocations.unwrap().as_ptr()}.add_next(next);
+                unsafe { &*state.allocations.unwrap().as_ptr() }.add_next(next);
             }
         });
         unsafe {
@@ -331,10 +335,13 @@ impl<T: Trace> Gc<T> {
     }
 
     unsafe fn set_root(&self) {
-        let addr = self.ptr.get().as_ptr() as isize;
-        let new_addr = addr | 1;
-        let new_ptr = new_addr as *mut GcBox<GcCell<T>>;
-        self.ptr.set(NonNull::new_unchecked(new_ptr))
+        let mut addr = Address {
+            ptr: self.ptr.get().as_ptr(),
+        };
+        unsafe {
+            addr.addr |= 1;
+            self.ptr.set(NonNull::new_unchecked(addr.ptr))
+        }
     }
 
     unsafe fn clear_root(&self) {
@@ -359,10 +366,6 @@ impl<T: Trace> Gc<T> {
             self.root();
         }
         gc_ref
-    }
-
-    pub fn root_count(&self) -> usize {
-        self.inner().roots.get()
     }
 }
 
@@ -403,7 +406,7 @@ impl<T: Trace + Display> Display for Gc<T> {
 
 unsafe impl<T: Trace> Trace for Gc<T> {
     fn trace(&self) {
-        let inner = self.inner().trace_inner();
+        self.inner().trace_inner();
     }
 
     fn root(&self) {
@@ -432,34 +435,6 @@ impl<T: Trace + Debug> Debug for Gc<T> {
 impl<T: Trace + Hash> Hash for Gc<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.inner().value().borrow().hash(state);
-    }
-}
-
-type GcRef<'a, T> = std::cell::Ref<'a, T>;
-
-pub struct GcRefMut<'a, T: Trace> {
-    gc_box: &'a GcBox<RefCell<T>>,
-    gc_ref: std::cell::RefMut<'a, T>,
-}
-
-impl<'a, T: Trace> Deref for GcRefMut<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        &self.gc_ref
-    }
-}
-
-impl<'a, T: Trace> DerefMut for GcRefMut<'a, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.gc_ref
-    }
-}
-
-impl<'a, T: Trace> Drop for GcRefMut<'a, T> {
-    fn drop(&mut self) {
-        self.gc_box.unroot_inner();
-        self.gc_ref.unroot();
     }
 }
 

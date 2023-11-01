@@ -145,7 +145,7 @@ impl<'a> Scanner<'a> {
         Token {
             kind,
             line: self.line,
-            string: self.string.get(self.start..self.current).unwrap(),
+            string: &self.string[self.start..self.current],
         }
     }
 
@@ -196,7 +196,7 @@ impl<'a> Scanner<'a> {
     }
 
     fn identifier_kind(&self) -> TokenKind {
-        let token = self.string.get(self.start..self.current).unwrap();
+        let token = &self.string[self.start..self.current];
         let mut chars = token.chars();
         match chars.next() {
             None => TokenKind::Identifier,

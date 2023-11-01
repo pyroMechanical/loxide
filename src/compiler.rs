@@ -3,8 +3,8 @@ use crate::{
     gc::Gc,
     object::{ObjFunction, ObjString},
     scanner::{Scanner, Token, TokenKind},
-    value::copy_string,
-    value::Value,
+    value::value::copy_string,
+    value::value::Value,
     vm::InterpretError,
 };
 
@@ -474,7 +474,7 @@ impl<'a> Parser<'a> {
     }
 
     fn number(&mut self, _: bool) {
-        let value = Value::Number(self.previous.as_str().parse::<f64>().unwrap());
+        let value = Value::number(self.previous.as_str().parse::<f64>().unwrap());
         self.emit_constant(value);
     }
 
@@ -620,9 +620,9 @@ impl<'a> Parser<'a> {
             TokenKind::BangEqual => self.emit_byte_pair(OpCode::Equal, OpCode::Not),
             TokenKind::EqualEqual => self.emit_byte(OpCode::Equal),
             TokenKind::Greater => self.emit_byte(OpCode::Greater),
-            TokenKind::GreaterEqual => self.emit_byte_pair(OpCode::Less, OpCode::Negate),
+            TokenKind::GreaterEqual => self.emit_byte_pair(OpCode::Less, OpCode::Not),
             TokenKind::Less => self.emit_byte(OpCode::Less),
-            TokenKind::LessEqual => self.emit_byte_pair(OpCode::Greater, OpCode::Negate),
+            TokenKind::LessEqual => self.emit_byte_pair(OpCode::Greater, OpCode::Not),
             _ => unreachable!(),
         }
     }
@@ -706,7 +706,7 @@ impl<'a> Parser<'a> {
 
     fn identifier_constant(&mut self, name: Token) -> u8 {
         let str_obj = ObjString::new(name.as_str().to_string());
-        return self.current_chunk().borrow_mut().add_constant(Value::Object(str_obj.into())) as u8;
+        return self.current_chunk().borrow_mut().add_constant(Value::string(str_obj.into())) as u8;
     }
 
     fn add_local(&mut self, name: &'a str) {
@@ -950,7 +950,7 @@ impl<'a> Parser<'a> {
         let function = self.end();
         let compiler = std::mem::replace(&mut self.compiler, old_compiler);
 
-        let f = self.make_constant(Value::Object(function.clone().into()));
+        let f = self.make_constant(Value::function(function.clone().into()));
         self.emit_byte_pair(OpCode::Closure, f);
 
         for i in 0..function.borrow().upvalue_count {

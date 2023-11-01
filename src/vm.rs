@@ -1,27 +1,28 @@
 use crate::chunk::{Chunk, OpCode};
 use crate::gc::Gc;
 use crate::object::{
-    ObjBoundMethod, ObjClass, ObjClosure, ObjInstance, ObjNative, ObjString, ObjUpvalue, ObjectType,
+    ObjBoundMethod, ObjClass, ObjClosure, ObjInstance, ObjNative, ObjString, ObjUpvalue,
 };
-use crate::value::Value;
-use once_cell::sync::Lazy;
+use crate::value::{ValueType, value::*};
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 const STACK_MAX: usize = 256;
-
-pub static START_TIME: Lazy<std::time::Instant> = Lazy::new(|| std::time::Instant::now());
+thread_local! {
+    pub static START_TIME: Cell<std::time::Instant> = Cell::new(std::time::Instant::now());
+}
 
 macro_rules! binary_op {
-    ($vm: expr, $enum_variant: ident, $op: tt) => {
+    ($vm: expr, $create_fn: ident, $op: tt) => {
         {
-            use crate::value::Value::*;
-            if !$vm.peek(0)?.is_number() || !$vm.peek(1)?.is_number() {
+            use crate::value::value::Value;
+            if !Value::is_number($vm.peek(0)?) || !Value::is_number($vm.peek(1)?) {
                 $vm.runtime_error(format!("Operands must be numbers."))?;
             }
-            let b = $vm.pop()?.as_number()?;
-            let a = $vm.pop()?.as_number()?;
-            $vm.push($enum_variant(a $op b))?;
+            let b = $vm.pop()?.as_number().or_else(|_| $vm.runtime_error(format!("Operand must be a number.")))?;
+            let a = $vm.pop()?.as_number().or_else(|_| $vm.runtime_error(format!("Operand must be a number.")))?;
+            $vm.push(Value::$create_fn(a $op b))?;
         }
     }
 }
@@ -48,7 +49,7 @@ impl CallFrame {
 }
 
 fn clock_native(_: *mut [Value]) -> Value {
-    Value::Number(START_TIME.elapsed().as_secs_f64())
+    Value::number(START_TIME.with(|start_time| start_time.get().elapsed().as_secs_f64()))
 }
 
 pub struct VM {
@@ -66,7 +67,7 @@ impl VM {
         let mut result = Self {
             frames: vec![],
             frame_count: 0,
-            stack: std::array::from_fn(|_| Value::Number(0.0).clone()),
+            stack: std::array::from_fn(|_| Value::number(0.0).clone()),
             stack_index: 0,
             globals: HashMap::new(),
             init_string: ObjString::new("init".to_string()),
@@ -97,7 +98,7 @@ impl VM {
         self.frames.last_mut().unwrap()
     }
 
-    fn runtime_error(&mut self, msg: String) -> Result<(), InterpretError> {
+    fn runtime_error<T>(&mut self, msg: String) -> Result<T, InterpretError> {
         eprintln!("{}", msg);
         for i in (0..self.frame_count).rev() {
             let frame = &self.frames[i];
@@ -118,7 +119,7 @@ impl VM {
 
     fn define_native(&mut self, name: &str, function: fn(*mut [Value]) -> Value) {
         let name = ObjString::new(name.to_string());
-        let native = Value::Object(ObjNative::new(function).into());
+        let native = Value::native(ObjNative::new(function).into());
         self.globals.insert(name, native);
     }
 
@@ -153,35 +154,32 @@ impl VM {
     }
 
     pub fn call_value(&mut self, callee: Value, arg_count: usize) -> Result<(), InterpretError> {
-        match &callee {
-            Value::Object(object) => match object.borrow().obj_type() {
-                ObjectType::BoundMethod => {
-                    let bound_method = callee.as_bound_method().unwrap();
-                    self.stack[self.stack_index - arg_count - 1] =
-                        bound_method.borrow().receiver.clone();
-                    return self.call(bound_method.borrow().method.clone(), arg_count);
-                }
-                ObjectType::Class => {
-                    let class = callee.as_class().unwrap();
-                    self.stack[self.stack_index - arg_count - 1] =
-                        Value::Object(ObjInstance::new(class.clone()).into());
-                    if let Some(closure) = class.borrow().methods.get(&self.init_string) {
-                        return self.call(closure.clone(), arg_count);
-                    } else if arg_count != 0 {
-                        return self
-                            .runtime_error(format!("Expected 0 arguments but got {}.", arg_count));
-                    };
-                    Ok(())
-                }
-                ObjectType::Closure => return self.call(callee.as_closure().unwrap(), arg_count),
-                ObjectType::Native => {
-                    let native = callee.as_native().unwrap().borrow().function;
-                    let result = native(self.get_value_slice(arg_count)?);
-                    self.stack_index -= arg_count + 1;
-                    self.push(result)
-                }
-                _ => return self.runtime_error("Can only call functions and classes.".to_string()),
-            },
+        match callee.value_type() {
+            ValueType::BoundMethod => {
+                let bound_method = callee.as_bound_method().unwrap();
+                self.stack[self.stack_index - arg_count - 1] =
+                    bound_method.borrow().receiver.clone();
+                return self.call(bound_method.borrow().method.clone(), arg_count);
+            }
+            ValueType::Class => {
+                let class = callee.as_class().unwrap();
+                self.stack[self.stack_index - arg_count - 1] =
+                    Value::instance(ObjInstance::new(class.clone()).into());
+                if let Some(closure) = class.borrow().methods.get(&self.init_string) {
+                    return self.call(closure.clone(), arg_count);
+                } else if arg_count != 0 {
+                    return self
+                        .runtime_error(format!("Expected 0 arguments but got {}.", arg_count));
+                };
+                Ok(())
+            }
+            ValueType::Closure => return self.call(callee.as_closure().unwrap(), arg_count),
+            ValueType::Native => {
+                let native = callee.as_native().unwrap().borrow().function;
+                let result = native(self.get_value_slice(arg_count)?);
+                self.stack_index -= arg_count + 1;
+                self.push(result)
+            }
             _ => return self.runtime_error("Can only call functions and classes.".to_string()),
         }
     }
@@ -224,7 +222,7 @@ impl VM {
                 let receiver = self.peek(0)?.clone();
                 let bound_method = ObjBoundMethod::new(receiver, method.clone());
                 self.pop()?;
-                self.push(Value::Object(bound_method.into()))
+                self.push(Value::bound_method(bound_method.into()))
             }
             None => self.runtime_error(format!("Undefined property {}", name)),
         }
@@ -298,7 +296,7 @@ impl VM {
             self.runtime_error(format!("Stack is empty, no value to pop."))?;
         }
         self.stack_index -= 1;
-        let result = std::mem::replace(&mut self.stack[self.stack_index], Value::Number(0.0));
+        let result = std::mem::replace(&mut self.stack[self.stack_index], Value::number(0.0));
         Ok(result)
     }
 
@@ -311,7 +309,7 @@ impl VM {
             self.runtime_error("Operands must be two numbers or two strings.".to_string())?;
         }
 
-        let new_value = crate::value::concatenate_strings(a.unwrap(), b.unwrap());
+        let new_value = concatenate_strings(a.unwrap(), b.unwrap());
         self.pop()?;
         self.pop()?;
         self.push(new_value)
@@ -391,11 +389,13 @@ impl VM {
                     }
                     OpCode::Closure => {
                         let index = self.read_byte();
-                        if let Ok(function) =
-                            self.current_chunk().borrow().constants[index as usize].clone().as_function()
+                        if let Ok(function) = self.current_chunk().borrow().constants
+                            [index as usize]
+                            .clone()
+                            .as_function()
                         {
                             let closure = ObjClosure::new(function.clone());
-                            self.push(Value::Object(closure.clone().into()))?;
+                            self.push(Value::closure(closure.clone().into()))?;
                             for _i in 0..function.borrow().upvalue_count {
                                 let is_local = self.read_byte();
                                 let index = self.read_byte();
@@ -420,7 +420,7 @@ impl VM {
                     }
                     OpCode::Class => {
                         let name = self.read_string();
-                        let class = Value::Object(ObjClass::new(name).into());
+                        let class = Value::class(ObjClass::new(name).into());
                         self.push(class)?;
                     }
                     OpCode::Inherit => {
@@ -496,20 +496,19 @@ impl VM {
                             }
                         }
                     }
-                    OpCode::Nil => self.push(Value::Nil)?,
-                    OpCode::False => self.push(Value::Bool(false))?,
-                    OpCode::True => self.push(Value::Bool(true))?,
+                    OpCode::Nil => self.push(Value::nil())?,
+                    OpCode::False => self.push(Value::bool_(false))?,
+                    OpCode::True => self.push(Value::bool_(true))?,
                     OpCode::Negate => {
-                        if self.peek(0)?.is_number() {
-                            let value = self.pop()?.as_number()?;
-                            self.push(Value::Number(-value))?;
-                        } else {
-                            self.runtime_error(format!("Operand must be a number."))?;
-                        }
+                        let value = self
+                            .pop()?
+                            .as_number()
+                            .or_else(|_| self.runtime_error(format!("Operand must be a number.")))?;
+                        self.push(Value::number(-value))?;
                     }
                     OpCode::Not => {
                         let value = self.pop()?;
-                        self.push(Value::Bool(value.is_falsey()))?;
+                        self.push(Value::bool_(value.is_falsey()))?;
                     }
                     OpCode::GetUpvalue => {
                         let slot = self.read_byte();
@@ -538,8 +537,9 @@ impl VM {
                         let instance = self.peek(0)?.clone().as_instance();
                         if let Ok(instance) = instance {
                             let name = self.read_byte();
-                            if let Ok(name) =
-                                self.current_chunk().borrow().constants[name as usize].clone().as_string()
+                            if let Ok(name) = self.current_chunk().borrow().constants[name as usize]
+                                .clone()
+                                .as_string()
                             {
                                 match instance.borrow().fields.get(&name) {
                                     Some(value) => {
@@ -560,8 +560,9 @@ impl VM {
                         let instance = self.peek(1)?.clone().as_instance();
                         if let Ok(instance) = instance {
                             let name = self.read_byte();
-                            if let Ok(name) =
-                                self.current_chunk().borrow().constants[name as usize].clone().as_string()
+                            if let Ok(name) = self.current_chunk().borrow().constants[name as usize]
+                                .clone()
+                                .as_string()
                             {
                                 instance
                                     .borrow_mut()
@@ -585,26 +586,22 @@ impl VM {
                     OpCode::Equal => {
                         let b = self.pop()?;
                         let a = self.pop()?;
-                        self.push(Value::Bool(a == b))?;
+                        self.push(Value::bool_(a == b))?;
                     }
-                    OpCode::Greater => binary_op!(self, Bool, >),
-                    OpCode::Less => binary_op!(self, Bool, <),
+                    OpCode::Greater => binary_op!(self, bool_, >),
+                    OpCode::Less => binary_op!(self, bool_, <),
                     OpCode::Add => {
                         if self.peek(0)?.is_string() && self.peek(1)?.is_string() {
                             self.concatenate_strings()?;
-                        } else if self.peek(0)?.is_number() && self.peek(1)?.is_number() {
-                            let b = self.pop()?.as_number()?;
-                            let a = self.pop()?.as_number()?;
-                            self.push(Value::Number(a + b))?;
                         } else {
-                            self.runtime_error(format!(
-                                "Operands must be two numbers or two strings."
-                            ))?;
+                            let b = self.pop()?.as_number().or_else(|_| self.runtime_error(format!("Operands must be two numbers or two strings")))?;
+                            let a = self.pop()?.as_number().or_else(|_| self.runtime_error(format!("Operands must be two numbers or two strings")))?;
+                            self.push(Value::number(a + b))?;
                         }
                     }
-                    OpCode::Subtract => binary_op!(self, Number, -),
-                    OpCode::Multiply => binary_op!(self, Number, *),
-                    OpCode::Divide => binary_op!(self, Number, /),
+                    OpCode::Subtract => binary_op!(self, number, -),
+                    OpCode::Multiply => binary_op!(self, number, *),
+                    OpCode::Divide => binary_op!(self, number, /),
                     OpCode::Constant => {
                         let index = self.read_byte();
                         let index = index;
@@ -618,10 +615,10 @@ impl VM {
 
     pub fn interpret(&mut self, source: String) -> Result<(), InterpretError> {
         let function = crate::compiler::compile(source.as_str())?;
-        self.push(Value::Object(function.clone().into()))?;
+        self.push(Value::function(function.clone().into()))?;
         let closure = ObjClosure::new(function);
         self.pop()?;
-        self.push(Value::Object(closure.clone().into()))?;
+        self.push(Value::closure(closure.clone().into()))?;
         self.call(closure, 0)?;
         self.run()
     }
