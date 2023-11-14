@@ -41,13 +41,13 @@ impl Precedence {
     }
 }
 
-struct ParseRule<'a, 'b> {
-    prefix: Option<&'a dyn Fn(&'a mut Parser<'b>, bool) -> ()>,
-    infix: Option<&'a dyn Fn(&'a mut Parser<'b>, bool) -> ()>,
+struct ParseRule<'a, 'b, ErrOut: std::io::Write> {
+    prefix: Option<&'a dyn Fn(&'a mut Parser<'b, ErrOut>, bool) -> ()>,
+    infix: Option<&'a dyn Fn(&'a mut Parser<'b, ErrOut>, bool) -> ()>,
     precedence: Precedence,
 }
 
-fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
+fn get_rule<'a, 'b, ErrOut:std::io::Write>(kind: TokenKind) -> ParseRule<'a, 'b, ErrOut> {
     match kind {
         TokenKind::LeftParen => ParseRule {
             prefix: Some(&Parser::grouping),
@@ -82,12 +82,12 @@ fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
         TokenKind::BangEqual => ParseRule {
             prefix: None,
             infix: Some(&Parser::binary),
-            precedence: Precedence::Comparison,
+            precedence: Precedence::Equality,
         },
         TokenKind::EqualEqual => ParseRule {
             prefix: None,
             infix: Some(&Parser::binary),
-            precedence: Precedence::Comparison,
+            precedence: Precedence::Equality,
         },
         TokenKind::Greater => ParseRule {
             prefix: None,
@@ -162,21 +162,24 @@ fn get_rule<'a, 'b>(kind: TokenKind) -> ParseRule<'a, 'b> {
     }
 }
 
-fn error(token: Token, message: &str, had_error: &mut bool, panic_mode: &mut bool) {
+fn error(token: Token, message: &str, had_error: &mut bool, panic_mode: &mut bool, err: &mut impl std::io::Write) {
     if *panic_mode {
         return;
     }
     *panic_mode = true;
     *had_error = true;
-    eprint!("[line {}] Error", token.line());
+    write!(err, "[line {}] Error", token.line()).ok();
     match token.kind() {
         TokenKind::Error => (),
+        TokenKind::EOF => {
+            write!(err, " at end").ok();
+        }
         _ => {
-            eprint!(" at '{}': ", token.as_str());
+            write!(err, " at '{}'", token.as_str()).ok();
         }
     }
 
-    eprintln!("{}", message);
+    writeln!(err, ": {}", message).ok();
 }
 #[derive(Clone, Copy)]
 struct Local<'a> {
@@ -255,6 +258,7 @@ impl<'a> Compiler<'a> {
         previous: Token,
         had_error: &mut bool,
         panic_mode: &mut bool,
+        err: &mut impl std::io::Write
     ) -> Option<u8> {
         for i in (0..self.local_count).rev() {
             let local = &self.locals[i];
@@ -265,9 +269,12 @@ impl<'a> Compiler<'a> {
                         "Can't read local variable in its own initializer.",
                         had_error,
                         panic_mode,
+                        err,
                     );
                 }
-                return Some(i as u8);
+                else {
+                    return Some(i as u8);
+                }
             }
         }
         return None;
@@ -279,20 +286,21 @@ impl<'a> Compiler<'a> {
         previous: Token,
         had_error: &mut bool,
         panic_mode: &mut bool,
+        err: &mut impl std::io::Write
     ) -> Option<u8> {
         if self.enclosing.is_null() {
             return None;
         }
         let enclosing = unsafe { &mut *self.enclosing };
-        let local = enclosing.resolve_local(name, previous, had_error, panic_mode);
+        let local = enclosing.resolve_local(name, previous, had_error, panic_mode, err);
         if let Some(local) = local {
             enclosing.locals[local as usize].is_captured = true;
-            return self.add_upvalue(local, true, previous, had_error, panic_mode);
+            return self.add_upvalue(local, true, previous, had_error, panic_mode, err);
         }
 
-        let upvalue = enclosing.resolve_upvalue(name, previous, had_error, panic_mode);
+        let upvalue = enclosing.resolve_upvalue(name, previous, had_error, panic_mode, err);
         if let Some(upvalue) = upvalue {
-            return self.add_upvalue(upvalue, false, previous, had_error, panic_mode);
+            return self.add_upvalue(upvalue, false, previous, had_error, panic_mode, err);
         }
         return None;
     }
@@ -304,6 +312,7 @@ impl<'a> Compiler<'a> {
         previous: Token,
         had_error: &mut bool,
         panic_mode: &mut bool,
+        err: &mut impl std::io::Write
     ) -> Option<u8> {
         let upvalue_count = self.function.borrow().upvalue_count;
         for i in 0..upvalue_count {
@@ -312,18 +321,20 @@ impl<'a> Compiler<'a> {
                 return Some(i as u8);
             }
         }
-        if upvalue_count == u8::MAX as usize {
+        if upvalue_count == (u8::MAX as usize) + 1 {
             error(
                 previous,
                 "Too many closure variables in function.",
                 had_error,
                 panic_mode,
+                err
             );
+        } else {
+            self.upvalues[upvalue_count].is_local = is_local;
+            self.upvalues[upvalue_count].index = index;
+            self.function.borrow_mut().upvalue_count += 1;
         }
-
-        self.upvalues[upvalue_count].is_local = is_local;
-        self.upvalues[upvalue_count].index = index;
-        self.function.borrow_mut().upvalue_count += 1;
+        
         return Some(upvalue_count as u8);
     }
 }
@@ -333,7 +344,7 @@ pub struct ClassCompiler {
     has_superclass: bool,
 }
 
-pub struct Parser<'a> {
+pub struct Parser<'a, ErrOut: std::io::Write> {
     scanner: Scanner<'a>,
     previous: Token<'a>,
     current: Token<'a>,
@@ -341,11 +352,13 @@ pub struct Parser<'a> {
     class_compiler: *mut ClassCompiler,
     panic_mode: bool,
     had_error: bool,
+    err: &'a mut ErrOut
 }
 
-impl<'a> Parser<'a> {
-    fn new(source: &'a str) -> Parser<'a> {
+impl<'a, ErrOut:std::io::Write> Parser<'a, ErrOut> {
+    fn new(source: &'a str, err: &'a mut ErrOut) -> Parser<'a, ErrOut> {
         Parser {
+            err,
             scanner: Scanner::new(source),
             previous: Token::default(),
             current: Token::default(),
@@ -376,15 +389,17 @@ impl<'a> Parser<'a> {
             current,
             panic_mode,
             had_error,
+            err,
             ..
         } = self;
         *previous = *current;
-        'skip_errors: for token in scanner {
+        'skip_errors: loop {
+            let token = scanner.scan_token();
             *current = token;
             if current.kind() != TokenKind::Error {
                 break 'skip_errors;
             }
-            error(token, token.as_str(), had_error, panic_mode);
+            error(token, token.as_str(), had_error, panic_mode, err);
         }
     }
 
@@ -397,6 +412,7 @@ impl<'a> Parser<'a> {
                 error_message,
                 &mut self.had_error,
                 &mut self.panic_mode,
+                &mut self.err,
             )
         }
     }
@@ -425,6 +441,7 @@ impl<'a> Parser<'a> {
                 "Loop body too large.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                &mut self.err
             );
         }
 
@@ -441,14 +458,14 @@ impl<'a> Parser<'a> {
 
     fn make_constant(&mut self, value: Value) -> u8 {
         let constant = self.current_chunk().borrow_mut().add_constant(value);
-        if constant > 255 {
+        if constant > u8::MAX as usize {
             error(
-                self.current,
-                "too many constants in one chunk.",
+                self.previous,
+                "Too many constants in one chunk.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                &mut self.err
             );
-            return 0;
         }
         constant as u8
     }
@@ -466,6 +483,7 @@ impl<'a> Parser<'a> {
                 "Too much code to jump over.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                &mut self.err
             );
         }
 
@@ -492,7 +510,7 @@ impl<'a> Parser<'a> {
         let value = copy_string(
             string.trim_start_matches('"').trim_end_matches('"')
         );
-        let index = self.current_chunk().borrow_mut().add_constant(value);
+        let index = self.make_constant(value);
         self.emit_byte_pair(OpCode::Constant, index as u8);
     }
 
@@ -502,6 +520,7 @@ impl<'a> Parser<'a> {
             self.previous,
             &mut self.had_error,
             &mut self.panic_mode,
+            &mut self.err
         )
     }
 
@@ -511,6 +530,7 @@ impl<'a> Parser<'a> {
             self.previous,
             &mut self.had_error,
             &mut self.panic_mode,
+            &mut self.err
         )
     }
 
@@ -552,6 +572,7 @@ impl<'a> Parser<'a> {
                 "Can't use 'super' outside of a class.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                self.err
             );
         } else if !unsafe { &*self.class_compiler }.has_superclass {
             error(
@@ -559,6 +580,7 @@ impl<'a> Parser<'a> {
                 "Can't use 'super' in a class with no superclass.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                self.err
             );
         }
 
@@ -585,6 +607,7 @@ impl<'a> Parser<'a> {
                 "Can't use 'this' outside of a class.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                self.err
             );
             return;
         }
@@ -609,7 +632,7 @@ impl<'a> Parser<'a> {
 
     fn binary(&mut self, _: bool) {
         let operator_kind = self.previous.kind();
-        let parse_rule = get_rule(operator_kind);
+        let parse_rule = get_rule::<ErrOut>(operator_kind);
         self.parse_precedence(parse_rule.precedence.next());
 
         match operator_kind {
@@ -637,7 +660,9 @@ impl<'a> Parser<'a> {
                     "Can't have more than 255 arguments.",
                     &mut self.had_error,
                     &mut self.panic_mode,
+                    self.err
                 );
+                return 0; //rust panics on overflow
             }
             arg_count += 1;
             if !self.match_token(TokenKind::Comma) {
@@ -679,11 +704,12 @@ impl<'a> Parser<'a> {
                 "Expect expression.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                self.err
             ),
             Some(prefix_rule) => prefix_rule(self, can_assign),
         }
 
-        while precedence <= get_rule(self.current.kind()).precedence {
+        while precedence <= get_rule::<ErrOut>(self.current.kind()).precedence {
             self.advance();
             let infix_rule = get_rule(self.previous.kind()).infix;
             match infix_rule {
@@ -692,21 +718,22 @@ impl<'a> Parser<'a> {
                 }
                 Some(infix_rule) => infix_rule(self, can_assign),
             }
+        }
 
-            if can_assign && self.match_token(TokenKind::Equal) {
-                error(
-                    self.previous,
-                    "Invalid assignment target.",
-                    &mut self.had_error,
-                    &mut self.panic_mode,
-                );
-            }
+        if can_assign && self.match_token(TokenKind::Equal) {
+            error(
+                self.previous,
+                "Invalid assignment target.",
+                &mut self.had_error,
+                &mut self.panic_mode,
+                self.err
+            );
         }
     }
 
     fn identifier_constant(&mut self, name: Token) -> u8 {
         let str_obj = ObjString::new(name.as_str().to_string());
-        return self.current_chunk().borrow_mut().add_constant(Value::string(str_obj.into())) as u8;
+        return self.make_constant(Value::string(str_obj.into())) as u8;
     }
 
     fn add_local(&mut self, name: &'a str) {
@@ -716,6 +743,7 @@ impl<'a> Parser<'a> {
                 "Too many local variables in function.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                self.err
             );
             return;
         }
@@ -741,6 +769,7 @@ impl<'a> Parser<'a> {
                     "Already a variable with this name in this scope.",
                     &mut self.had_error,
                     &mut self.panic_mode,
+                    self.err
                 );
             }
         }
@@ -805,6 +834,7 @@ impl<'a> Parser<'a> {
                 "Can't return from top-level code.",
                 &mut self.had_error,
                 &mut self.panic_mode,
+                self.err
             );
         }
 
@@ -817,6 +847,7 @@ impl<'a> Parser<'a> {
                     "Can't return a value from an initializer.",
                     &mut self.had_error,
                     &mut self.panic_mode,
+                    self.err
                 );
             }
             self.expression();
@@ -859,7 +890,9 @@ impl<'a> Parser<'a> {
             self.expression();
             self.consume(TokenKind::Semicolon, "Expect ';' after loop condition.");
 
-            Some(self.emit_jump(OpCode::JumpIfFalse))
+            let jump = Some(self.emit_jump(OpCode::JumpIfFalse));
+            self.emit_byte(OpCode::Pop);
+            jump
         } else {
             None
         };
@@ -934,6 +967,7 @@ impl<'a> Parser<'a> {
                         "Can't have more than 255 parameters.",
                         &mut self.had_error,
                         &mut self.panic_mode,
+                        self.err
                     );
                 }
             }
@@ -1000,6 +1034,7 @@ impl<'a> Parser<'a> {
                     "A class can't inherit from itself.",
                     &mut self.had_error,
                     &mut self.panic_mode,
+                    self.err
                 );
             }
 
@@ -1016,7 +1051,7 @@ impl<'a> Parser<'a> {
 
         self.named_variable(class_name, false);
         self.consume(TokenKind::LeftBrace, "Expect '{' before class body.");
-        while !self.check(TokenKind::RightBrace) {
+        while !self.check(TokenKind::RightBrace) && !self.check(TokenKind::EOF) {
             self.method();
         }
         self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
@@ -1142,8 +1177,8 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn compile<'a>(source: &str) -> Result<Gc<ObjFunction>, InterpretError> {
-    let mut parser = Parser::new(source);
+pub fn compile<'a>(source: &str, err: &mut impl std::io::Write) -> Result<Gc<ObjFunction>, InterpretError> {
+    let mut parser = Parser::new(source, err);
     parser.advance();
     while !parser.scanner.is_at_end() {
         parser.declaration();
@@ -1151,7 +1186,7 @@ pub fn compile<'a>(source: &str) -> Result<Gc<ObjFunction>, InterpretError> {
     let function = parser.end();
     match parser.had_error {
         false => {
-            parser.current_chunk().borrow().disassemble();
+            //parser.current_chunk().borrow().disassemble();
             Ok(function)
         }
         true => Err(InterpretError::Compile),

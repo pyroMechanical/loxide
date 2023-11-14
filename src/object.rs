@@ -56,7 +56,6 @@ unsafe impl Trace for ObjString {
 }
 
 #[repr(C)]
-#[derive(PartialEq)]
 pub struct ObjUpvalue {
     pub location: *mut Value,
     pub closed: Value,
@@ -119,7 +118,6 @@ unsafe impl Trace for ObjUpvalue {
 }
 
 #[repr(C)]
-#[derive(PartialEq)]
 pub struct ObjFunction {
     pub arity: usize,
     pub upvalue_count: usize,
@@ -142,7 +140,7 @@ impl Display for ObjFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.name.as_ref() {
             None => f.write_str("<script>"),
-            Some(name) => name.fmt(f),
+            Some(name) => f.write_str(format!("<fn {}>", name.to_string()).as_str())
         }
     }
 }
@@ -163,7 +161,6 @@ unsafe impl Trace for ObjFunction {
 }
 
 #[repr(C)]
-#[derive(PartialEq)]
 pub struct ObjClosure {
     pub function: Gc<ObjFunction>,
     pub upvalues: Vec<Gc<ObjUpvalue>>,
@@ -200,7 +197,6 @@ unsafe impl Trace for ObjClosure {
 }
 
 #[repr(C)]
-#[derive(PartialEq)]
 pub struct ObjClass {
     pub name: Gc<ObjString>,
     pub methods: HashMap<Gc<ObjString>, Gc<ObjClosure>>,
@@ -237,7 +233,6 @@ unsafe impl Trace for ObjClass {
 }
 
 #[repr(C)]
-#[derive(PartialEq)]
 pub struct ObjInstance {
     pub class: Gc<ObjClass>,
     pub fields: HashMap<Gc<ObjString>, Value>,
@@ -276,7 +271,6 @@ unsafe impl Trace for ObjInstance {
 }
 
 #[repr(C)]
-#[derive(PartialEq)]
 pub struct ObjBoundMethod {
     pub receiver: Value,
     pub method: Gc<ObjClosure>,
@@ -310,7 +304,6 @@ unsafe impl Trace for ObjBoundMethod {
 }
 
 #[repr(C)]
-#[derive(PartialEq)]
 pub struct ObjNative {
     pub function: fn(*mut [Value]) -> Value,
 }

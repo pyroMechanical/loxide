@@ -44,6 +44,7 @@ pub enum TokenKind {
     Var,
     While,
     Error,
+    EOF,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -239,7 +240,7 @@ impl<'a> Scanner<'a> {
             match self.peek() {
                 None => break 'identifier,
                 Some(c) => match c {
-                    '0'..='9' | 'a'..='z' | 'A'..='Z' => {
+                    '0'..='9' | 'a'..='z' | 'A'..='Z'| '_' => {
                         self.advance();
                     }
                     _ => break 'identifier,
@@ -261,7 +262,7 @@ impl<'a> Scanner<'a> {
                 },
             }
         }
-        if let Some('.') = self.peek() {
+        if self.peek() == Some('.') && self.peek_next().is_some_and(|c| ('0'..='9').contains(&c)) {
             self.advance();
             'fraction: loop {
                 match self.peek() {
@@ -281,7 +282,7 @@ impl<'a> Scanner<'a> {
     fn string(&mut self) -> Token<'a> {
         loop {
             match self.advance() {
-                None => return self.error_token("Unterminated String!"),
+                None => return self.error_token("Unterminated String."),
                 Some(c) => {
                     if c == '\n' {
                         self.line += 1;
@@ -293,12 +294,12 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    pub fn scan_token(&mut self) -> Option<Token<'a>> {
+    pub fn scan_token(&mut self) -> Token<'a> {
         self.start = self.current;
         self.skip_whitespace();
         let c = self.advance();
         let token = match c {
-            None => return None,
+            None => return self.make_token(TokenKind::EOF),
             Some(c) => match c {
                 '(' => self.make_token(TokenKind::LeftParen),
                 ')' => self.make_token(TokenKind::RightParen),
@@ -345,18 +346,10 @@ impl<'a> Scanner<'a> {
                     self.make_token(kind)
                 }
                 '0'..='9' => self.number(),
-                'a'..='z' | 'A'..='Z' => self.identifier(),
-                _ => self.error_token("Unexpected character!"),
+                'a'..='z' | 'A'..='Z'| '_' => self.identifier(),
+                _ => self.error_token("Unexpected character."),
             },
         };
-        Some(token)
-    }
-}
-
-impl<'a> Iterator for Scanner<'a> {
-    type Item = Token<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.scan_token()
+        token
     }
 }

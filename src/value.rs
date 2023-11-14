@@ -12,15 +12,15 @@ pub enum ValueType {
     Class,
     Instance,
     BoundMethod,
-    Native
+    Native,
 }
 
 #[cfg(not(nan_boxing))]
 pub mod value {
     use super::CastError;
+    use super::ValueType;
     use crate::gc::{Gc, Trace};
     use crate::object::*;
-    use super::ValueType;
     use std::fmt::{Display, Formatter};
     #[derive(Clone, PartialEq)]
     pub enum Value {
@@ -58,9 +58,7 @@ pub mod value {
     impl Value {
         pub fn to_string(&self) -> Option<String> {
             match self {
-                Value::String(object) => {
-                    Some(object.borrow().as_str().to_string())
-                }
+                Value::String(object) => Some(object.borrow().as_str().to_string()),
                 _ => None,
             }
         }
@@ -316,8 +314,7 @@ pub mod value {
         pub fn to_string(&self) -> Option<String> {
             if let Ok(string) = self.as_string() {
                 Some(string.borrow().to_string())
-            }
-            else {
+            } else {
                 None
             }
         }
@@ -328,7 +325,7 @@ pub mod value {
             } else if self.is_bool() {
                 ValueType::Bool
             } else if self.is_object() {
-                let object_tag = (unsafe{self.bits} & NATIVE_FN);
+                let object_tag = (unsafe { self.bits } & NATIVE_FN);
                 match object_tag {
                     STRING => ValueType::String,
                     UPVALUE => ValueType::Upvalue,
@@ -338,7 +335,7 @@ pub mod value {
                     INSTANCE => ValueType::Instance,
                     BOUND_METHOD => ValueType::BoundMethod,
                     NATIVE_FN => ValueType::Native,
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
             } else {
                 ValueType::Number
@@ -346,14 +343,14 @@ pub mod value {
         }
 
         pub fn nil() -> Value {
-            Value{bits:NIL}
+            Value { bits: NIL }
         }
 
         pub fn bool_(boolean: bool) -> Value {
             if boolean {
-                Value{bits:TRUE}
+                Value { bits: TRUE }
             } else {
-                Value{bits:FALSE}
+                Value { bits: FALSE }
             }
         }
 
@@ -427,8 +424,7 @@ pub mod value {
 
         pub fn is_object(&self) -> bool {
             unsafe {
-                self.bits != REAL_INDEFINITE &&
-                self.bits & REAL_INDEFINITE == REAL_INDEFINITE
+                self.bits != REAL_INDEFINITE && self.bits & REAL_INDEFINITE == REAL_INDEFINITE
             }
         }
 
@@ -439,7 +435,7 @@ pub mod value {
         pub fn is_string(&self) -> bool {
             match self.as_string() {
                 Ok(_) => true,
-                Err(_) => false
+                Err(_) => false,
             }
         }
 
@@ -458,7 +454,7 @@ pub mod value {
         }
 
         pub fn is_nil(&self) -> bool {
-            unsafe { return self.bits == NIL}
+            unsafe { return self.bits == NIL }
         }
 
         pub fn as_bool(&self) -> Result<bool, InterpretError> {
@@ -484,7 +480,7 @@ pub mod value {
         pub fn as_string(&self) -> Result<Gc<ObjString>, CastError> {
             if !self.is_object() {
                 return Err(CastError::NotAnObject);
-            }else if unsafe{self.bits} & NATIVE_FN != STRING {
+            } else if unsafe { self.bits } & NATIVE_FN != STRING {
                 return Err(CastError::IncorrectObjectType);
             }
             //bit weird, but temp will not cause a drop of self, and dereferencing then cloning
@@ -492,16 +488,15 @@ pub mod value {
             let temp = Value {
                 bits: unsafe { self.bits } & !(QNAN | SIGN_BIT | NATIVE_FN),
             };
-            let result = unsafe {(*temp.string).clone()};
+            let result = unsafe { (*temp.string).clone() };
             std::mem::forget(temp);
             return Ok(result);
-            
         }
 
         pub fn as_upvalue(&self) -> Result<Gc<ObjUpvalue>, CastError> {
             if !self.is_object() {
                 return Err(CastError::NotAnObject);
-            }else if unsafe{self.bits} & NATIVE_FN != UPVALUE {
+            } else if unsafe { self.bits } & NATIVE_FN != UPVALUE {
                 return Err(CastError::IncorrectObjectType);
             }
             //bit weird, but temp will not cause a drop of self, and dereferencing then cloning
@@ -509,7 +504,7 @@ pub mod value {
             let temp = Value {
                 bits: unsafe { self.bits } & !(QNAN | SIGN_BIT | NATIVE_FN),
             };
-            let result = unsafe {(*temp.upvalue).clone()};
+            let result = unsafe { (*temp.upvalue).clone() };
             std::mem::forget(temp);
             return Ok(result);
         }
@@ -517,7 +512,7 @@ pub mod value {
         pub fn as_function(&self) -> Result<Gc<ObjFunction>, CastError> {
             if !self.is_object() {
                 return Err(CastError::NotAnObject);
-            }else if unsafe{self.bits} & NATIVE_FN != FUNCTION {
+            } else if unsafe { self.bits } & NATIVE_FN != FUNCTION {
                 return Err(CastError::IncorrectObjectType);
             }
             //bit weird, but temp will not cause a drop of self, and dereferencing then cloning
@@ -525,7 +520,7 @@ pub mod value {
             let temp = Value {
                 bits: unsafe { self.bits } & !(QNAN | SIGN_BIT | NATIVE_FN),
             };
-            let result = unsafe {(*temp.function).clone()};
+            let result = unsafe { (*temp.function).clone() };
             std::mem::forget(temp);
             return Ok(result);
         }
@@ -533,7 +528,7 @@ pub mod value {
         pub fn as_closure(&self) -> Result<Gc<ObjClosure>, CastError> {
             if !self.is_object() {
                 return Err(CastError::NotAnObject);
-            }else if unsafe{self.bits} & NATIVE_FN != CLOSURE {
+            } else if unsafe { self.bits } & NATIVE_FN != CLOSURE {
                 return Err(CastError::IncorrectObjectType);
             }
             //bit weird, but temp will not cause a drop of self, and dereferencing then cloning
@@ -541,7 +536,7 @@ pub mod value {
             let temp = Value {
                 bits: unsafe { self.bits } & !(QNAN | SIGN_BIT | NATIVE_FN),
             };
-            let result = unsafe {(*temp.closure).clone()};
+            let result = unsafe { (*temp.closure).clone() };
             std::mem::forget(temp);
             return Ok(result);
         }
@@ -549,7 +544,7 @@ pub mod value {
         pub fn as_class(&self) -> Result<Gc<ObjClass>, CastError> {
             if !self.is_object() {
                 return Err(CastError::NotAnObject);
-            }else if unsafe{self.bits} & NATIVE_FN != CLASS {
+            } else if unsafe { self.bits } & NATIVE_FN != CLASS {
                 return Err(CastError::IncorrectObjectType);
             }
             //bit weird, but temp will not cause a drop of self, and dereferencing then cloning
@@ -557,7 +552,7 @@ pub mod value {
             let temp = Value {
                 bits: unsafe { self.bits } & !(QNAN | SIGN_BIT | NATIVE_FN),
             };
-            let result = unsafe {(*temp.class).clone()};
+            let result = unsafe { (*temp.class).clone() };
             std::mem::forget(temp);
             return Ok(result);
         }
@@ -565,7 +560,7 @@ pub mod value {
         pub fn as_instance(&self) -> Result<Gc<ObjInstance>, CastError> {
             if !self.is_object() {
                 return Err(CastError::NotAnObject);
-            }else if unsafe{self.bits} & NATIVE_FN != INSTANCE {
+            } else if unsafe { self.bits } & NATIVE_FN != INSTANCE {
                 return Err(CastError::IncorrectObjectType);
             }
             //bit weird, but temp will not cause a drop of self, and dereferencing then cloning
@@ -573,7 +568,7 @@ pub mod value {
             let temp = Value {
                 bits: unsafe { self.bits } & !(QNAN | SIGN_BIT | NATIVE_FN),
             };
-            let result = unsafe {(*temp.instance).clone()};
+            let result = unsafe { (*temp.instance).clone() };
             std::mem::forget(temp);
             return Ok(result);
         }
@@ -581,7 +576,7 @@ pub mod value {
         pub fn as_bound_method(&self) -> Result<Gc<ObjBoundMethod>, CastError> {
             if !self.is_object() {
                 return Err(CastError::NotAnObject);
-            }else if unsafe{self.bits} & NATIVE_FN != BOUND_METHOD {
+            } else if unsafe { self.bits } & NATIVE_FN != BOUND_METHOD {
                 return Err(CastError::IncorrectObjectType);
             }
             //bit weird, but temp will not cause a drop of self, and dereferencing then cloning
@@ -589,7 +584,7 @@ pub mod value {
             let temp = Value {
                 bits: unsafe { self.bits } & !(QNAN | SIGN_BIT | NATIVE_FN),
             };
-            let result = unsafe {(*temp.bound_method).clone()};
+            let result = unsafe { (*temp.bound_method).clone() };
             std::mem::forget(temp);
             return Ok(result);
         }
@@ -597,7 +592,7 @@ pub mod value {
         pub fn as_native(&self) -> Result<Gc<ObjNative>, CastError> {
             if !self.is_object() {
                 return Err(CastError::NotAnObject);
-            }else if unsafe{self.bits} & NATIVE_FN != NATIVE_FN {
+            } else if unsafe { self.bits } & NATIVE_FN != NATIVE_FN {
                 return Err(CastError::IncorrectObjectType);
             }
             //bit weird, but temp will not cause a drop of self, and dereferencing then cloning
@@ -605,7 +600,7 @@ pub mod value {
             let temp = Value {
                 bits: unsafe { self.bits } & !(QNAN | SIGN_BIT | NATIVE_FN),
             };
-            let result = unsafe {(*temp.native).clone()};
+            let result = unsafe { (*temp.native).clone() };
             std::mem::forget(temp);
             return Ok(result);
         }
@@ -624,7 +619,7 @@ pub mod value {
                 ValueType::Native => Value::native(self.as_native().unwrap()),
                 _ => Value {
                     bits: unsafe { self.bits },
-                }
+                },
             }
         }
     }
@@ -633,10 +628,16 @@ pub mod value {
         fn eq(&self, other: &Self) -> bool {
             match (self.value_type(), other.value_type()) {
                 (ValueType::Nil, ValueType::Nil) => true,
-                (ValueType::Bool, ValueType::Bool) => self.as_bool().unwrap() == other.as_bool().unwrap(),
-                (ValueType::Number, ValueType::Number) => self.as_number().unwrap() == other.as_number().unwrap(),
-                (ValueType::String, ValueType::String) => self.as_string().unwrap() == other.as_string().unwrap(),
-                _ => false
+                (ValueType::Bool, ValueType::Bool) => {
+                    self.as_bool().unwrap() == other.as_bool().unwrap()
+                }
+                (ValueType::Number, ValueType::Number) => {
+                    self.as_number().unwrap() == other.as_number().unwrap()
+                }
+                (ValueType::String, ValueType::String) => {
+                    self.as_string().unwrap() == other.as_string().unwrap()
+                }
+                _ => false,
             }
         }
     }
@@ -655,7 +656,6 @@ pub mod value {
                 ValueType::Instance => self.as_instance().unwrap().fmt(f),
                 ValueType::BoundMethod => self.as_bound_method().unwrap().fmt(f),
                 ValueType::Native => self.as_native().unwrap().fmt(f),
-                
             }
         }
     }
@@ -671,7 +671,7 @@ pub mod value {
                 ValueType::Instance => self.as_instance().unwrap().trace(),
                 ValueType::BoundMethod => self.as_bound_method().unwrap().trace(),
                 ValueType::Native => self.as_native().unwrap().trace(),
-                _ => ()
+                _ => (),
             }
         }
 
@@ -685,7 +685,7 @@ pub mod value {
                 ValueType::Instance => self.as_instance().unwrap().root(),
                 ValueType::BoundMethod => self.as_bound_method().unwrap().root(),
                 ValueType::Native => self.as_native().unwrap().root(),
-                _ => ()
+                _ => (),
             }
         }
 
@@ -699,7 +699,7 @@ pub mod value {
                 ValueType::Instance => self.as_instance().unwrap().unroot(),
                 ValueType::BoundMethod => self.as_bound_method().unwrap().unroot(),
                 ValueType::Native => self.as_native().unwrap().unroot(),
-                _ => ()
+                _ => (),
             }
         }
     }
@@ -707,41 +707,40 @@ pub mod value {
     impl Drop for Value {
         fn drop(&mut self) {
             match self.value_type() {
-                ValueType::String => unsafe{
+                ValueType::String => unsafe {
                     self.bits &= !(QNAN | SIGN_BIT | NATIVE_FN);
                     ManuallyDrop::drop(&mut self.string);
                 },
-                ValueType::Upvalue => unsafe{
+                ValueType::Upvalue => unsafe {
                     self.bits &= !(QNAN | SIGN_BIT | NATIVE_FN);
                     ManuallyDrop::drop(&mut self.upvalue);
                 },
-                ValueType::Function => unsafe{
+                ValueType::Function => unsafe {
                     self.bits &= !(QNAN | SIGN_BIT | NATIVE_FN);
                     ManuallyDrop::drop(&mut self.function);
                 },
-                ValueType::Closure => unsafe{
+                ValueType::Closure => unsafe {
                     self.bits &= !(QNAN | SIGN_BIT | NATIVE_FN);
                     ManuallyDrop::drop(&mut self.closure);
                 },
-                ValueType::Class => unsafe{
+                ValueType::Class => unsafe {
                     self.bits &= !(QNAN | SIGN_BIT | NATIVE_FN);
                     ManuallyDrop::drop(&mut self.class);
                 },
-                ValueType::Instance => unsafe{
+                ValueType::Instance => unsafe {
                     self.bits &= !(QNAN | SIGN_BIT | NATIVE_FN);
                     ManuallyDrop::drop(&mut self.instance);
                 },
-                ValueType::BoundMethod => unsafe{
+                ValueType::BoundMethod => unsafe {
                     self.bits &= !(QNAN | SIGN_BIT | NATIVE_FN);
                     ManuallyDrop::drop(&mut self.bound_method);
                 },
-                ValueType::Native => unsafe{
+                ValueType::Native => unsafe {
                     self.bits &= !(QNAN | SIGN_BIT | NATIVE_FN);
                     ManuallyDrop::drop(&mut self.native);
                 },
-                _ => ()
+                _ => (),
             }
-            
         }
     }
 

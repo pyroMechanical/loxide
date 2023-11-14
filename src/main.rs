@@ -1,6 +1,7 @@
 mod chunk;
 mod compiler;
 mod gc;
+mod test;
 mod object;
 mod scanner;
 mod value;
@@ -8,21 +9,11 @@ mod vm;
 
 use vm::*;
 
-#[test]
-fn test_vm()
+fn repl<StdOut, StdErr>(vm: &mut VM<StdOut, StdErr>)
+where
+    StdOut: std::io::Write,
+    StdErr: std::io::Write,
 {
-    let mut vm = VM::new();
-    let _ = vm.interpret(
-    r#"
-    fun fib(index) {
-        if(index <= 1) return index;
-        return fib(index - 1) + fib(index - 2);
-      }
-      print fib(25);
-    "#.to_string());
-}
-
-fn repl(vm: &mut VM) {
     let input = std::io::stdin();
     'repl: loop {
         let mut line = String::new();
@@ -41,7 +32,11 @@ fn repl(vm: &mut VM) {
     }
 }
 
-fn run_file(vm: &mut VM, file_path: String) {
+pub fn run_file<StdOut, StdErr>(vm: &mut VM<StdOut, StdErr>, file_path: String)
+where
+    StdOut: std::io::Write,
+    StdErr: std::io::Write,
+{
     let file = std::fs::read_to_string(file_path.as_str());
     match file {
         Ok(source) => match vm.interpret(source) {
@@ -54,7 +49,9 @@ fn run_file(vm: &mut VM, file_path: String) {
 
 fn main() {
     let _ = START_TIME.with(|start_time| start_time.get().elapsed());
-    let mut vm = VM::new();
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    let mut vm = VM::new(&mut stdout, &mut stderr);
     let mut args = std::env::args();
     if args.len() == 1 {
         repl(&mut vm);

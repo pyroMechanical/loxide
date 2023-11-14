@@ -3,7 +3,7 @@ use crate::gc::Gc;
 use crate::object::{
     ObjBoundMethod, ObjClass, ObjClosure, ObjInstance, ObjNative, ObjString, ObjUpvalue,
 };
-use crate::value::{ValueType, value::*};
+use crate::value::{value::*, ValueType};
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -52,7 +52,7 @@ fn clock_native(_: *mut [Value]) -> Value {
     Value::number(START_TIME.with(|start_time| start_time.get().elapsed().as_secs_f64()))
 }
 
-pub struct VM {
+pub struct VM<'a, StdOut: std::io::Write, StdErr: std::io::Write> {
     frames: Vec<CallFrame>,
     frame_count: usize,
     stack: [Value; STACK_MAX],
@@ -60,10 +60,12 @@ pub struct VM {
     globals: HashMap<Gc<ObjString>, Value>,
     pub init_string: Gc<ObjString>,
     pub open_upvalues: Option<Gc<ObjUpvalue>>,
+    out: &'a mut StdOut,
+    err: &'a mut StdErr,
 }
 
-impl VM {
-    pub fn new() -> Self {
+impl<'a, StdOut: std::io::Write, StdErr: std::io::Write> VM<'a, StdOut, StdErr> {
+    pub fn new(out: &'a mut StdOut, err: &'a mut StdErr) -> Self {
         let mut result = Self {
             frames: vec![],
             frame_count: 0,
@@ -72,6 +74,8 @@ impl VM {
             globals: HashMap::new(),
             init_string: ObjString::new("init".to_string()),
             open_upvalues: None,
+            out,
+            err,
         };
         result.define_native("clock", clock_native);
         result
@@ -99,18 +103,20 @@ impl VM {
     }
 
     fn runtime_error<T>(&mut self, msg: String) -> Result<T, InterpretError> {
-        eprintln!("{}", msg);
+        writeln!(self.err, "{}", msg).ok();
         for i in (0..self.frame_count).rev() {
             let frame = &self.frames[i];
             let closure = frame.closure.borrow();
             let function = closure.function.borrow();
-            eprint!(
+            write!(
+                self.err,
                 "[line {}] in ",
                 function.chunk.borrow().get_line(frame.ip - 1)
-            );
+            )
+            .ok();
             match &function.name {
-                None => eprintln!("script"),
-                Some(string) => eprintln!("{}", string.borrow().as_str()),
+                None => writeln!(self.err, "script").ok(),
+                Some(string) => writeln!(self.err, "{}", string.borrow().as_str()).ok(),
             };
         }
         self.reset_stack();
@@ -143,8 +149,8 @@ impl VM {
         let arity = callee.borrow().function.borrow().arity;
         if arg_count != arity {
             return self.runtime_error(format!(
-                "Expected {} arguments but got {}",
-                arg_count, arity
+                "Expected {} arguments but got {}.",
+                arity, arg_count,
             ));
         }
 
@@ -224,7 +230,7 @@ impl VM {
                 self.pop()?;
                 self.push(Value::bound_method(bound_method.into()))
             }
-            None => self.runtime_error(format!("Undefined property {}", name)),
+            None => self.runtime_error(format!("Undefined property '{}'.", name)),
         }
     }
 
@@ -232,20 +238,23 @@ impl VM {
         let mut previous_upvalue = None;
         let mut current_upvalue = self.open_upvalues.clone();
         while let Some(upvalue) = current_upvalue.clone() {
-            if upvalue.borrow().location > local {
+            if upvalue.borrow().location <= local {
                 break;
             }
             previous_upvalue = Some(upvalue.clone());
             current_upvalue = upvalue.borrow().next.clone();
         }
 
-        if let Some(upvalue) = current_upvalue {
+        if let Some(upvalue) = current_upvalue.clone() {
             if upvalue.borrow().location == local {
                 return upvalue;
             }
         }
 
         let created_upvalue = ObjUpvalue::new(local);
+        if let Some(upvalue) = current_upvalue {
+            created_upvalue.borrow_mut().add_next(upvalue);
+        }
         if let Some(upvalue) = previous_upvalue {
             upvalue.borrow_mut().add_next(created_upvalue.clone());
         } else {
@@ -349,6 +358,11 @@ impl VM {
 
     pub fn run(&mut self) -> Result<(), InterpretError> {
         loop {
+            //print!("[");
+            //for index in 0..self.stack_index {
+            //    print!("{}, ", self.stack[index]);
+            //}
+            //println!("]");
             let read_op = self.read_operation();
             match read_op {
                 None => return Ok(()), //must return something if there is no code
@@ -424,7 +438,10 @@ impl VM {
                         self.push(class)?;
                     }
                     OpCode::Inherit => {
-                        let superclass = self.peek(1)?.clone().as_class().unwrap();
+                        let superclass = match self.peek(1)?.clone().as_class() {
+                            Ok(superclass) => superclass,
+                            Err(_) => {return self.runtime_error("Superclass must be a class.".to_string());}
+                        };
                         let subclass = self.peek(0)?.clone().as_class().unwrap();
                         let subclass_methods = &mut subclass.borrow_mut().methods;
 
@@ -455,7 +472,10 @@ impl VM {
                         self.stack_index = stack_index;
                         self.push(result)?;
                     }
-                    OpCode::Print => println!("{}", self.pop()?),
+                    OpCode::Print => {
+                        let result = self.pop()?;
+                        writeln!(self.out, "{}", result).ok();
+                    }
                     OpCode::Pop => {
                         self.pop()?;
                     }
@@ -473,7 +493,7 @@ impl VM {
                         let name = self.read_string();
                         match self.globals.get(&name) {
                             None => {
-                                self.runtime_error(format!("Undefined variable {}", name))?;
+                                self.runtime_error(format!("Undefined variable '{}'.", name))?;
                             }
                             Some(value) => self.push(value.clone())?,
                         };
@@ -500,10 +520,9 @@ impl VM {
                     OpCode::False => self.push(Value::bool_(false))?,
                     OpCode::True => self.push(Value::bool_(true))?,
                     OpCode::Negate => {
-                        let value = self
-                            .pop()?
-                            .as_number()
-                            .or_else(|_| self.runtime_error(format!("Operand must be a number.")))?;
+                        let value = self.pop()?.as_number().or_else(|_| {
+                            self.runtime_error(format!("Operand must be a number."))
+                        })?;
                         self.push(Value::number(-value))?;
                     }
                     OpCode::Not => {
@@ -573,6 +592,10 @@ impl VM {
                             self.pop()?;
                             self.push(value)?;
                         }
+                        else {
+                            return self
+                                .runtime_error("Only instances have fields.".to_string());
+                        }
                     }
                     OpCode::GetSuper => {
                         let constant = self.read_byte();
@@ -594,8 +617,16 @@ impl VM {
                         if self.peek(0)?.is_string() && self.peek(1)?.is_string() {
                             self.concatenate_strings()?;
                         } else {
-                            let b = self.pop()?.as_number().or_else(|_| self.runtime_error(format!("Operands must be two numbers or two strings")))?;
-                            let a = self.pop()?.as_number().or_else(|_| self.runtime_error(format!("Operands must be two numbers or two strings")))?;
+                            let b = self.pop()?.as_number().or_else(|_| {
+                                self.runtime_error(format!(
+                                    "Operands must be two numbers or two strings."
+                                ))
+                            })?;
+                            let a = self.pop()?.as_number().or_else(|_| {
+                                self.runtime_error(format!(
+                                    "Operands must be two numbers or two strings."
+                                ))
+                            })?;
                             self.push(Value::number(a + b))?;
                         }
                     }
@@ -604,7 +635,6 @@ impl VM {
                     OpCode::Divide => binary_op!(self, number, /),
                     OpCode::Constant => {
                         let index = self.read_byte();
-                        let index = index;
                         let value = self.current_chunk().borrow().constants[index as usize].clone();
                         self.push(value)?;
                     }
@@ -614,7 +644,8 @@ impl VM {
     }
 
     pub fn interpret(&mut self, source: String) -> Result<(), InterpretError> {
-        let function = crate::compiler::compile(source.as_str())?;
+        let function = crate::compiler::compile(source.as_str(), self.err)?;
+        //function.borrow().chunk.borrow().disassemble();
         self.push(Value::function(function.clone().into()))?;
         let closure = ObjClosure::new(function);
         self.pop()?;

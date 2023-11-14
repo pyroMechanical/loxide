@@ -20,7 +20,6 @@ impl GcState {
             unsafe {
                 let gc_box = allocation.as_ref();
                 if gc_box.roots.get() > 0 {
-                    //println!("mark value");
                     gc_box.trace_inner();
                 }
                 current = gc_box.next.get();
@@ -382,9 +381,9 @@ impl<T: Trace> Clone for Gc<T> {
     }
 }
 
-impl<T: Trace + PartialEq> PartialEq for Gc<T> {
+impl<T: Trace> PartialEq for Gc<T> {
     fn eq(&self, other: &Self) -> bool {
-        *self.inner().value().borrow() == *other.inner().value().borrow()
+        self.ptr.get() == other.ptr.get()
     }
 }
 
