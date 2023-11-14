@@ -58,6 +58,6 @@ fn main() {
     } else if args.len() == 2 {
         run_file(&mut vm, args.nth(1).unwrap());
     } else {
-        eprintln!("Usage: rlox [path]");
+        eprintln!("Usage: loxide [path]");
     }
 }
